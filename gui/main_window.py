@@ -311,6 +311,9 @@ class MainWindow(ctk.CTk):
         # 绑定选择事件
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
 
+        # 绑定点击事件用于复选框切换
+        self.tree.bind("<Button-1>", self.on_tree_click)
+
     def load_data(self):
         """加载数据"""
         try:
@@ -442,6 +445,30 @@ class MainWindow(ctk.CTk):
 
         self.refresh_table()
 
+    def on_tree_click(self, event):
+        """处理 Treeview 点击事件，切换复选框状态"""
+        # 识别点击的列和区域
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+
+        column = self.tree.identify("column", event.x, event.y)
+
+        # "select" 列是第 1 列（索引从 0 或 1 开始，取决于 Treeview）
+        # Treeview 的列索引：#0 是图标列，#1 是第一列
+        # 我们的 "select" 列应该是 #1
+
+        if column != "#1":
+            return
+
+        # 获取点击的 item
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+
+        # 切换复选框状态
+        self.toggle_checkbox(item)
+
     def on_tree_select(self, event):
         """表格选择事件"""
         selected_items = self.tree.selection()
@@ -458,6 +485,29 @@ class MainWindow(ctk.CTk):
     def on_clear_selection(self):
         """清除选择"""
         self.tree.selection_remove(self.tree.selection())
+
+    def toggle_checkbox(self, item_id):
+        """切换单行的复选框状态
+
+        Args:
+            item_id: Treeview item ID
+        """
+        # 切换状态
+        current_state = self.checked_items.get(item_id, False)
+        new_state = not current_state
+        self.checked_items[item_id] = new_state
+
+        # 更新显示
+        checkbox_symbol = "☑" if new_state else "☐"
+        self.tree.set(item_id, "select", checkbox_symbol)
+
+        # 更新选中计数
+        self.update_selected_count()
+
+    def update_selected_count(self):
+        """更新选中项计数标签"""
+        count = sum(1 for checked in self.checked_items.values() if checked)
+        self.selected_label.configure(text=f"已选择: {count} 项")
 
     def on_batch_download(self):
         """批量下载"""
