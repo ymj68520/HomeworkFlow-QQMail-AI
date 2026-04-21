@@ -706,9 +706,107 @@ class MainWindow(ctk.CTk):
             self.configure(cursor="")
             self.status_label.configure(text="状态: 就绪")
 
+    def show_delete_confirmation_dialog(self, submissions: List[dict]) -> bool:
+        """显示批量删除确认对话框
+
+        Args:
+            submissions: 要删除的提交记录列表
+
+        Returns:
+            用户是否确认删除
+        """
+        # 创建对话框窗口
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("确认删除")
+        dialog.geometry("500x400")
+
+        # 设置为模态对话框
+        dialog.transient(self)
+        dialog.grab_set()
+
+        # 结果
+        result = [False]
+
+        # 标题
+        title_label = ctk.CTkLabel(
+            dialog,
+            text=f"确认删除以下 {len(submissions)} 条记录？",
+            font=("Arial", 16, "bold")
+        )
+        title_label.pack(pady=20)
+
+        # 警告文本
+        warning_label = ctk.CTkLabel(
+            dialog,
+            text="⚠️ 此操作不可撤销！",
+            font=("Arial", 14),
+            text_color="red"
+        )
+        warning_label.pack(pady=5)
+
+        # 记录列表（使用 Scrollable frame）
+        from customtkinter import CTkScrollableFrame
+
+        scrollable_frame = CTkScrollableFrame(dialog, height=200)
+        scrollable_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+        for sub in submissions:
+            item_label = ctk.CTkLabel(
+                scrollable_frame,
+                text=f"• {sub['student_id']} - {sub['name']} - {sub['assignment_name']}",
+                anchor="w"
+            )
+            item_label.pack(fill="x", pady=2)
+
+        # 按钮容器
+        button_frame = ctk.CTkFrame(dialog)
+        button_frame.pack(fill="x", padx=20, pady=20)
+
+        def on_confirm():
+            result[0] = True
+            dialog.destroy()
+
+        def on_cancel():
+            result[0] = False
+            dialog.destroy()
+
+        # 确认按钮
+        confirm_btn = ctk.CTkButton(
+            button_frame,
+            text="确认删除",
+            command=on_confirm,
+            fg_color="red",
+            hover_color="darkred"
+        )
+        confirm_btn.pack(side="left", expand=True, padx=5)
+
+        # 取消按钮
+        cancel_btn = ctk.CTkButton(
+            button_frame,
+            text="取消",
+            command=on_cancel
+        )
+        cancel_btn.pack(side="left", expand=True, padx=5)
+
+        # 等待对话框关闭
+        dialog.wait_window()
+        return result[0]
+
     def on_batch_delete(self):
-        """批量删除"""
-        messagebox.showinfo("提示", "批量删除功能待实现")
+        """批量删除记录"""
+        submissions = self.get_checked_submissions()
+
+        if not submissions:
+            messagebox.showwarning("提示", "请先选择要删除的记录")
+            return
+
+        # 显示确认对话框
+        confirmed = self.show_delete_confirmation_dialog(submissions)
+        if not confirmed:
+            return
+
+        # 暂时显示成功消息
+        messagebox.showinfo("提示", f"将删除 {len(submissions)} 条记录（功能待完善）")
 
     def on_export_excel(self):
         """导出Excel"""
