@@ -1,6 +1,7 @@
 import customtkinter as ctk
 from tkinter import ttk, messagebox
 from typing import List
+from datetime import datetime
 from database.operations import db
 from config.settings import settings
 
@@ -22,6 +23,12 @@ class MainWindow(ctk.CTk):
         self.filtered_submissions = []
         self.selected_items = []
 
+        # 分页状态
+        self.current_page = 1
+        self.per_page = 100
+        self.total_pages = 1
+        self.total_count = 0
+
         # 复选框图像
         self.checkbox_unchecked_img = None
         self.checkbox_checked_img = None
@@ -33,8 +40,11 @@ class MainWindow(ctk.CTk):
         # 创建UI
         self.setup_ui()
 
-        # 加载数据
-        self.load_data()
+        # 启动后台监听
+        self.start_background_monitoring()
+
+        # 延迟加载数据（避免阻塞UI启动）
+        self.after(100, self.load_data)
 
     def create_checkbox_images(self):
         """创建复选框的 PIL PhotoImage 对象"""
@@ -269,7 +279,7 @@ class MainWindow(ctk.CTk):
         )
 
         # 定义列
-        columns = ["select", "学号", "姓名", "作业", "提交时间", "状态", "本地路径"]
+        columns = ["select", "学号", "姓名", "作业", "收件时间", "提交时间", "状态", "本地路径"]
         self.tree["columns"] = columns
 
         # 配置列
@@ -277,6 +287,7 @@ class MainWindow(ctk.CTk):
         self.tree.heading("学号", text="学号")
         self.tree.heading("姓名", text="姓名")
         self.tree.heading("作业", text="作业")
+        self.tree.heading("收件时间", text="收件时间")
         self.tree.heading("提交时间", text="提交时间")
         self.tree.heading("状态", text="状态")
         self.tree.heading("本地路径", text="本地路径")
@@ -285,6 +296,7 @@ class MainWindow(ctk.CTk):
         self.tree.column("学号", width=120, anchor="center")
         self.tree.column("姓名", width=100, anchor="center")
         self.tree.column("作业", width=100, anchor="center")
+        self.tree.column("收件时间", width=180, anchor="center")
         self.tree.column("提交时间", width=180, anchor="center")
         self.tree.column("状态", width=100, anchor="center")
         self.tree.column("本地路径", width=300, anchor="w")
@@ -312,26 +324,68 @@ class MainWindow(ctk.CTk):
         # 绑定点击事件用于复选框切换
         self.tree.bind("<Button-1>", self.on_tree_click)
 
-    def load_data(self):
-        """加载数据"""
+        # 绑定双击事件用于打开预览
+        self.tree.bind("<Double-1>", self.on_tree_double_click)
+
+        # 分页控件
+        pagination_frame = ctk.CTkFrame(parent)
+        pagination_frame.pack(fill="x", padx=10, pady=(5, 10))
+
+        self.page_label = ctk.CTkLabel(
+            pagination_frame,
+            text=f"第 {self.current_page}/{self.total_pages} 页 (共 {self.total_count} 条)"
+        )
+        self.page_label.pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            pagination_frame,
+            text="上一页",
+            command=self.on_prev_page,
+            width=80
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            pagination_frame,
+            text="下一页",
+            command=self.on_next_page,
+            width=80
+        ).pack(side="left", padx=5)
+
+        # 邮件预览侧边栏（初始隐藏）
+        from gui.email_preview_drawer import EmailPreviewDrawer
+        self.preview_drawer = EmailPreviewDrawer(self)
+        # 不pack/place，等待双击事件触发显示
+
+    def load_data(self, page: int = 1):
+        """加载数据 - 从TARGET_FOLDER分页拉取"""
         try:
-            self.status_label.configure(text="状态: 加载中...")
+            self.status_label.configure(text="状态: 正在连接邮件服务器...")
+            self.update()
 
-            # 从数据库加载所有提交记录
-            self.all_submissions = db.get_all_submissions()
+            # 从TARGET_FOLDER获取数据
+            from mail.target_folder_loader import target_folder_loader
+            result = target_folder_loader.get_from_target_folder(page, self.per_page)
+
+            self.all_submissions = result['submissions']
             self.filtered_submissions = self.all_submissions.copy()
+            self.current_page = result['page']
+            self.total_pages = result['total_pages']
+            self.total_count = result['total']
 
-            # 更新下拉菜单
+            # 更新UI
             self.update_dropdowns()
-
-            # 刷新表格
             self.refresh_table()
-
-            # 更新统计
             self.update_stats()
+            self.update_pagination()
 
-            self.status_label.configure(text="状态: 就绪")
+            self.status_label.configure(text=f"状态: 就绪（共{self.total_count}封邮件）")
 
+        except ConnectionError as e:
+            messagebox.showerror("连接错误", f"无法连接到邮件服务器：{str(e)}")
+            self.status_label.configure(text="状态: 连接失败")
+        except FileNotFoundError as e:
+            messagebox.showerror("文件夹错误", str(e))
+            self.status_label.configure(text="状态: 文件夹不存在")
         except Exception as e:
             messagebox.showerror("错误", f"加载数据失败: {str(e)}")
             self.status_label.configure(text="状态: 错误")
@@ -367,11 +421,23 @@ class MainWindow(ctk.CTk):
         for sub in self.filtered_submissions:
             status = "逾期" if sub['is_late'] else "正常"
             checkbox_symbol = "☐"  # 初始都未选中
+
+            # 格式化收件时间
+            received_time = sub.get('received_time')
+            if received_time:
+                if isinstance(received_time, datetime):
+                    received_str = received_time.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    received_str = str(received_time)
+            else:
+                received_str = "未知"
+
             values = [
                 checkbox_symbol,
                 sub['student_id'],
                 sub['name'],
                 sub['assignment_name'],
+                received_str,
                 sub['submission_time'].strftime('%Y-%m-%d %H:%M:%S'),
                 status,
                 sub['local_path'] or "未下载"
@@ -467,6 +533,32 @@ class MainWindow(ctk.CTk):
         # 切换复选框状态
         self.toggle_checkbox(item)
 
+    def on_tree_double_click(self, event) -> None:
+        """处理表格双击事件，打开预览侧边栏
+
+        Args:
+            event: 事件对象
+        """
+        # 识别点击的条目
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+
+        # 获取点击的条目
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+
+        # 获取该条目的数据
+        index = self.tree.index(item)
+        if 0 <= index < len(self.filtered_submissions):
+            submission_data = self.filtered_submissions[index]
+
+            # 显示预览侧边栏
+            self.preview_drawer.show(submission_data)
+
+            print(f"已打开预览: {submission_data.get('student_id')} - {submission_data.get('name')}")
+
     def on_tree_select(self, event):
         """表格选择事件"""
         selected_items = self.tree.selection()
@@ -536,7 +628,9 @@ class MainWindow(ctk.CTk):
 
     def on_batch_download(self):
         """批量下载附件"""
+        print("DEBUG: 批量下载按钮被点击")
         submissions = self.get_checked_submissions()
+        print(f"DEBUG: 获取到 {len(submissions)} 条选中记录")
 
         if not submissions:
             messagebox.showwarning("提示", "请先选择要下载的记录")
@@ -561,7 +655,14 @@ class MainWindow(ctk.CTk):
         failed_items = []
 
         try:
-            from mail.parser import mail_parser
+            from mail.parser import mail_parser_inbox as mail_parser
+
+            # 先连接到邮件服务器
+            print("DEBUG: 正在连接到邮件服务器...")
+            if not mail_parser.connect():
+                messagebox.showerror("错误", "无法连接到邮件服务器，请检查网络连接和配置")
+                return
+            print("DEBUG: 邮件服务器连接成功")
 
             for idx, sub in enumerate(submissions):
                 try:
@@ -571,10 +672,23 @@ class MainWindow(ctk.CTk):
                     self.update()
 
                     # 解析邮件获取附件
+                    print(f"DEBUG: 正在解析邮件 UID={sub['email_uid']}")
                     email_data = mail_parser.parse_email(sub['email_uid'])
+
+                    print(f"DEBUG: email_data={type(email_data)}")
+                    if email_data:
+                        # 安全地打印主题（避免编码错误）
+                        try:
+                            subject = email_data.get('subject', '')
+                            print(f"DEBUG: 邮件主题={subject}")
+                        except:
+                            print(f"DEBUG: 邮件主题=<包含特殊字符，无法显示>")
+                        print(f"DEBUG: 附件数量={len(email_data.get('attachments', []))}")
+
                     if not email_data or not email_data.get('attachments'):
                         failed_items.append(f"{sub['student_id']} - {sub['name']}: 无附件")
                         failed_count += 1
+                        print(f"DEBUG: 跳过（无附件）")
                         continue
 
                     # 重新保存附件
@@ -595,8 +709,17 @@ class MainWindow(ctk.CTk):
                         failed_count += 1
 
                 except Exception as e:
-                    failed_items.append(f"{sub['student_id']} - {sub['name']}: {str(e)}")
+                    error_msg = str(e)
+                    # 截断过长的错误信息
+                    if len(error_msg) > 100:
+                        error_msg = error_msg[:100] + "..."
+
+                    print(f"DEBUG: 处理记录时出错: {error_msg}")
+                    failed_items.append(f"{sub['student_id']} - {sub['name']}: {error_msg}")
                     failed_count += 1
+
+                    # 继续处理下一条记录，不中断
+                    continue
 
             # 刷新数据
             self.load_data()
@@ -610,8 +733,15 @@ class MainWindow(ctk.CTk):
 
             messagebox.showinfo("批量下载结果", message)
 
+            # 断开邮件服务器连接
+            mail_parser.disconnect()
+
         except Exception as e:
             messagebox.showerror("错误", f"批量下载失败: {str(e)}")
+            try:
+                mail_parser.disconnect()
+            except:
+                pass
 
         finally:
             # 恢复窗口
@@ -620,7 +750,9 @@ class MainWindow(ctk.CTk):
 
     def on_batch_reply(self):
         """批量回复邮件"""
+        print("DEBUG: 批量回复按钮被点击")
         submissions = self.get_checked_submissions()
+        print(f"DEBUG: 获取到 {len(submissions)} 条选中记录")
 
         if not submissions:
             messagebox.showwarning("提示", "请先选择要回复的记录")
@@ -792,7 +924,9 @@ class MainWindow(ctk.CTk):
 
     def on_batch_delete(self):
         """批量删除记录"""
+        print("DEBUG: 批量删除按钮被点击")
         submissions = self.get_checked_submissions()
+        print(f"DEBUG: 获取到 {len(submissions)} 条选中记录")
 
         if not submissions:
             messagebox.showwarning("提示", "请先选择要删除的记录")
@@ -871,3 +1005,39 @@ class MainWindow(ctk.CTk):
     def on_export_excel(self):
         """导出Excel"""
         messagebox.showinfo("提示", "导出Excel功能待实现")
+
+    def update_pagination(self):
+        """更新分页显示"""
+        self.page_label.configure(
+            text=f"第 {self.current_page}/{self.total_pages} 页 (共 {self.total_count} 条)"
+        )
+
+    def on_prev_page(self):
+        """上一页"""
+        if self.current_page > 1:
+            self.load_data(self.current_page - 1)
+
+    def on_next_page(self):
+        """下一页"""
+        if self.current_page < self.total_pages:
+            self.load_data(self.current_page + 1)
+
+    def start_background_monitoring(self):
+        """启动后台INBOX监听"""
+        import threading
+        import asyncio
+
+        def run_monitoring():
+            from core.workflow import workflow
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(workflow.monitor_inbox(interval=60))
+            except Exception as e:
+                print(f"监听出错: {e}")
+            finally:
+                loop.close()
+
+        monitor_thread = threading.Thread(target=run_monitoring, daemon=True)
+        monitor_thread.start()
+        self.status_label.configure(text="状态: 后台监听已启动")
