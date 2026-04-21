@@ -518,6 +518,24 @@ class MainWindow(ctk.CTk):
         count = sum(1 for checked in self.checked_items.values() if checked)
         self.selected_label.configure(text=f"已选择: {count} 项")
 
+    def get_checked_submissions(self) -> List[dict]:
+        """获取所有选中的提交记录
+
+        Returns:
+            选中记录的列表，每个记录包含完整的 submission 信息
+        """
+        checked_items = self.tree.get_children()
+        result = []
+
+        for item_id in checked_items:
+            if self.checked_items.get(item_id, False):
+                # 获取该 item 在 filtered_submissions 中的索引
+                index = self.tree.index(item_id)
+                if 0 <= index < len(self.filtered_submissions):
+                    result.append(self.filtered_submissions[index])
+
+        return result
+
     def on_batch_download(self):
         """批量下载"""
         messagebox.showinfo("提示", "批量下载功能待实现")
