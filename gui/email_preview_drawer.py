@@ -30,7 +30,43 @@ class EmailPreviewDrawer(ctk.CTkFrame):
 
         内容将在后续任务中添加
         """
-        # TODO: 在后续任务中实现UI组件初始化
+        # 滚动容器（支持内容过多时滚动）
+        self.scroll_frame = ctk.CTkScrollableFrame(self, label_text="邮件详情")
+        self.scroll_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # 卡片1: 学生信息
+        self.card_student = self._create_card("学生信息")
+        self.card_student.pack(fill="x", pady=(0, 15))
+
+        # 卡片2: 邮件信息
+        self.card_email = self._create_card("邮件信息")
+        self.card_email.pack(fill="x", pady=(0, 15))
+
+        # 卡片3: 作业信息
+        self.card_assignment = self._create_card("作业信息")
+        self.card_assignment.pack(fill="x", pady=(0, 15))
+
+        # 卡片4: 附件列表
+        self.card_attachments = self._create_card("附件列表")
+        self.card_attachments.pack(fill="x", pady=(0, 15))
+
+        # 顶部控制栏（固定按钮和关闭按钮）
+        self._setup_control_bar()
+
+    def _create_card(self, title: str) -> ctk.CTkFrame:
+        """创建信息卡片
+
+        Args:
+            title: 卡片标题
+
+        Returns:
+            信息卡片框架
+        """
+        card = ctk.CTkFrame(self.scroll_frame)
+        return card
+
+    def _setup_control_bar(self) -> None:
+        """设置顶部控制栏（将在后续任务中实现）"""
         pass
 
     def show(self, submission_data: Dict) -> None:
