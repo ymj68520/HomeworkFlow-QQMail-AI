@@ -621,8 +621,90 @@ class MainWindow(ctk.CTk):
             self.status_label.configure(text="状态: 就绪")
 
     def on_batch_reply(self):
-        """批量回复"""
-        messagebox.showinfo("提示", "批量回复功能待实现")
+        """批量回复邮件"""
+        submissions = self.get_checked_submissions()
+
+        if not submissions:
+            messagebox.showwarning("提示", "请先选择要回复的记录")
+            return
+
+        # 过滤出未回复的记录
+        unreplied_submissions = [sub for sub in submissions if not sub['is_replied']]
+
+        if not unreplied_submissions:
+            messagebox.showinfo("提示", "选中的记录都已回复过")
+            return
+
+        # 确认对话框
+        result = messagebox.askyesno(
+            "确认批量回复",
+            f"将给 {len(unreplied_submissions)} 条未回复记录发送确认邮件。\n\n是否继续？"
+        )
+
+        if not result:
+            return
+
+        # 禁用窗口
+        self.configure(cursor="watch")
+        self.update()
+        self.status_label.configure(text="状态: 批量回复中...")
+
+        success_count = 0
+        failed_count = 0
+        failed_items = []
+
+        try:
+            from mail.smtp_client import smtp_client
+
+            for idx, sub in enumerate(unreplied_submissions):
+                try:
+                    self.status_label.configure(
+                        text=f"状态: 正在回复第 {idx+1}/{len(unreplied_submissions)} 项..."
+                    )
+                    self.update()
+
+                    # 发送邮件
+                    sent = smtp_client.send_reply(
+                        to_email=sub['email'],
+                        student_name=sub['name'],
+                        assignment_name=sub['assignment_name']
+                    )
+
+                    if sent:
+                        # 标记为已回复
+                        db.mark_replied(sub['id'])
+                        success_count += 1
+                    else:
+                        failed_items.append(f"{sub['student_id']} - {sub['name']}: 发送失败")
+                        failed_count += 1
+
+                    # 延迟避免触发速率限制
+                    import time
+                    time.sleep(1.0)
+
+                except Exception as e:
+                    failed_items.append(f"{sub['student_id']} - {sub['name']}: {str(e)}")
+                    failed_count += 1
+
+            # 刷新数据
+            self.load_data()
+
+            # 显示结果
+            message = f"批量回复完成！\n\n成功: {success_count} 项\n失败: {failed_count} 项"
+            if failed_items:
+                message += "\n\n失败详情:\n" + "\n".join(failed_items[:5])
+                if len(failed_items) > 5:
+                    message += f"\n... 还有 {len(failed_items)-5} 项"
+
+            messagebox.showinfo("批量回复结果", message)
+
+        except Exception as e:
+            messagebox.showerror("错误", f"批量回复失败: {str(e)}")
+
+        finally:
+            # 恢复窗口
+            self.configure(cursor="")
+            self.status_label.configure(text="状态: 就绪")
 
     def on_batch_delete(self):
         """批量删除"""
