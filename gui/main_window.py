@@ -537,8 +537,88 @@ class MainWindow(ctk.CTk):
         return result
 
     def on_batch_download(self):
-        """批量下载"""
-        messagebox.showinfo("提示", "批量下载功能待实现")
+        """批量下载附件"""
+        submissions = self.get_checked_submissions()
+
+        if not submissions:
+            messagebox.showwarning("提示", "请先选择要下载的记录")
+            return
+
+        # 确认对话框
+        result = messagebox.askyesno(
+            "确认批量下载",
+            f"确定要重新下载 {len(submissions)} 条记录的附件吗？\n已存在的文件将被覆盖。"
+        )
+
+        if not result:
+            return
+
+        # 禁用窗口
+        self.configure(cursor="watch")
+        self.update()
+        self.status_label.configure(text="状态: 批量下载中...")
+
+        success_count = 0
+        failed_count = 0
+        failed_items = []
+
+        try:
+            from mail.parser import mail_parser
+
+            for idx, sub in enumerate(submissions):
+                try:
+                    self.status_label.configure(
+                        text=f"状态: 正在下载第 {idx+1}/{len(submissions)} 项..."
+                    )
+                    self.update()
+
+                    # 解析邮件获取附件
+                    email_data = mail_parser.parse_email(sub['email_uid'])
+                    if not email_data or not email_data.get('attachments'):
+                        failed_items.append(f"{sub['student_id']} - {sub['name']}: 无附件")
+                        failed_count += 1
+                        continue
+
+                    # 重新保存附件
+                    from storage.manager import storage_manager
+                    local_path = storage_manager.store_submission(
+                        assignment_name=sub['assignment_name'],
+                        student_id=sub['student_id'],
+                        name=sub['name'],
+                        attachments=email_data['attachments']
+                    )
+
+                    if local_path:
+                        # 更新数据库
+                        db.update_submission_local_path(sub['id'], local_path)
+                        success_count += 1
+                    else:
+                        failed_items.append(f"{sub['student_id']} - {sub['name']}: 保存失败")
+                        failed_count += 1
+
+                except Exception as e:
+                    failed_items.append(f"{sub['student_id']} - {sub['name']}: {str(e)}")
+                    failed_count += 1
+
+            # 刷新数据
+            self.load_data()
+
+            # 显示结果
+            message = f"批量下载完成！\n\n成功: {success_count} 项\n失败: {failed_count} 项"
+            if failed_items:
+                message += "\n\n失败详情:\n" + "\n".join(failed_items[:5])
+                if len(failed_items) > 5:
+                    message += f"\n... 还有 {len(failed_items)-5} 项"
+
+            messagebox.showinfo("批量下载结果", message)
+
+        except Exception as e:
+            messagebox.showerror("错误", f"批量下载失败: {str(e)}")
+
+        finally:
+            # 恢复窗口
+            self.configure(cursor="")
+            self.status_label.configure(text="状态: 就绪")
 
     def on_batch_reply(self):
         """批量回复"""
