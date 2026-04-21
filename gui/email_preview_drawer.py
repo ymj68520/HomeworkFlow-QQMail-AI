@@ -1,9 +1,36 @@
 """邮件预览侧边栏组件"""
 import customtkinter as ctk
-from typing import Dict
+from typing import Dict, TypedDict
+
+
+class StudentData(TypedDict, total=False):
+    """学生信息数据结构"""
+    student_id: str
+    name: str
+    email: str
+    is_late: bool
+    is_downloaded: bool
+    is_replied: bool
 
 class EmailPreviewDrawer(ctk.CTkFrame):
     """邮件预览侧边栏 - 从右侧滑入显示邮件详情"""
+
+    # 字体大小常量
+    FONT_SIZE_LARGE = 18
+    FONT_SIZE_TITLE = 14
+    FONT_SIZE_NORMAL = 12
+    FONT_SIZE_SMALL = 11
+
+    # 内边距常量
+    PADDING_CARD = 12
+    PADDING_SECTION = 8
+    PADDING_BADGE = 4
+
+    # 颜色常量
+    COLOR_LATE = "#FF6B6B"
+    COLOR_NORMAL = "#51CF66"
+    COLOR_DOWNLOADED = "#339AF0"
+    COLOR_REPLIED = "#CC5DE8"
 
     def __init__(self, parent, **kwargs) -> None:
         """初始化邮件预览侧边栏
@@ -81,7 +108,7 @@ class EmailPreviewDrawer(ctk.CTkFrame):
 
         return card
 
-    def _update_student_card(self, data: Dict) -> None:
+    def _update_student_card(self, data: StudentData) -> None:
         """更新学生信息卡片
 
         Args:
@@ -95,69 +122,69 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         student_id_label = ctk.CTkLabel(
             self.card_student.content_frame,
             text=f"学号: {data.get('student_id', '未设置')}",
-            font=("Arial", 18, "bold")
+            font=("Arial", self.FONT_SIZE_LARGE, "bold")
         )
-        student_id_label.pack(anchor="w", pady=(0, 8))
+        student_id_label.pack(anchor="w", pady=(0, self.PADDING_SECTION))
 
         # 姓名
         name_label = ctk.CTkLabel(
             self.card_student.content_frame,
             text=f"姓名: {data.get('name', '未设置')}",
-            font=("Arial", 12)
+            font=("Arial", self.FONT_SIZE_NORMAL)
         )
-        name_label.pack(anchor="w", pady=(0, 8))
+        name_label.pack(anchor="w", pady=(0, self.PADDING_SECTION))
 
         # 邮箱
         email = data.get('email', '未设置')
         email_label = ctk.CTkLabel(
             self.card_student.content_frame,
             text=f"邮箱: {email if email else '未设置'}",
-            font=("Arial", 11)
+            font=("Arial", self.FONT_SIZE_SMALL)
         )
-        email_label.pack(anchor="w", pady=(0, 12))
+        email_label.pack(anchor="w", pady=(0, self.PADDING_CARD))
 
         # 状态标签容器
         status_frame = ctk.CTkFrame(self.card_student.content_frame, fg_color="transparent")
-        status_frame.pack(fill="x", pady=(8, 0))
+        status_frame.pack(fill="x", pady=(self.PADDING_SECTION, 0))
 
         # 逾期/正常标签
         is_late = data.get('is_late', False)
         status_text = "逾期" if is_late else "正常"
-        status_color = "#FF6B6B" if is_late else "#51CF66"  # 红色/绿色
+        status_color = self.COLOR_LATE if is_late else self.COLOR_NORMAL
         status_label = ctk.CTkLabel(
             status_frame,
             text=status_text,
             fg_color=status_color,
             text_color="white",
             corner_radius=4,
-            padx=8,
-            pady=4
+            padx=self.PADDING_BADGE,
+            pady=self.PADDING_BADGE
         )
-        status_label.pack(side="left", padx=(0, 8))
+        status_label.pack(side="left", padx=(0, self.PADDING_SECTION))
 
         # 已下载标签
         if data.get('is_downloaded', False):
             downloaded_label = ctk.CTkLabel(
                 status_frame,
                 text="已下载 ✓",
-                fg_color="#339AF0",  # 蓝色
+                fg_color=self.COLOR_DOWNLOADED,
                 text_color="white",
                 corner_radius=4,
-                padx=8,
-                pady=4
+                padx=self.PADDING_BADGE,
+                pady=self.PADDING_BADGE
             )
-            downloaded_label.pack(side="left", padx=(0, 8))
+            downloaded_label.pack(side="left", padx=(0, self.PADDING_SECTION))
 
         # 已回复标签
         if data.get('is_replied', False):
             replied_label = ctk.CTkLabel(
                 status_frame,
                 text="已回复 ✓",
-                fg_color="#CC5DE8",  # 紫色
+                fg_color=self.COLOR_REPLIED,
                 text_color="white",
                 corner_radius=4,
-                padx=8,
-                pady=4
+                padx=self.PADDING_BADGE,
+                pady=self.PADDING_BADGE
             )
             replied_label.pack(side="left")
 
