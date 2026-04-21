@@ -1,4 +1,5 @@
 import sys
+import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -65,6 +66,27 @@ drawer._update_attachments_card(test_attachments_data)
 
 print(f"临时测试文件创建在: {test_file}")
 print("测试窗口已打开，请检查附件卡片是否正确显示")
+
+# 测试显示/隐藏
+root.update()  # 确保窗口已渲染
+
+print("测试显示...")
+drawer.show(test_data)
+time.sleep(1)
+
+print("测试更新...")
+drawer.show(test_email_data)
+time.sleep(1)
+
+print("测试隐藏...")
+drawer.hide()
+time.sleep(1)
+
+print("测试固定...")
+drawer.toggle_pin()
+print(f"是否固定: {drawer.is_pinned}")
+drawer.toggle_pin()
+print(f"是否固定: {drawer.is_pinned}")
 
 root.mainloop()
 

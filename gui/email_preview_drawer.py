@@ -585,13 +585,88 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             submission_data: 包含提交信息的字典
         """
         self.current_submission_data = submission_data
-        # TODO: 在后续任务中实现完整功能
-        # For now, just update the data without UI
+
+        # 更新所有卡片
+        self._update_student_card(submission_data)
+        self._update_email_card(submission_data)
+        self._update_assignment_card(submission_data)
+        self._update_attachments_card(submission_data)
+
+        # 如果未显示，执行滑入动画
+        if not self.is_visible:
+            self._slide_in()
+        else:
+            # 如果已显示，执行内容切换动画
+            self._fade_content()
+
+        self.is_visible = True
+
+    def _slide_in(self) -> None:
+        """滑入动画"""
+        # 计算目标宽度
+        parent_width = self.master.winfo_width()
+        target_width = int(parent_width * self.width_ratio)
+        target_width = max(self.min_width, min(target_width, self.max_width))
+
+        # 设置初始位置（屏幕右侧外）
+        self.place(x=parent_width, y=0, relheight=1)
+        self.place_configure(width=target_width)
+
+        # 执行滑入动画
+        current_x = parent_width
+        target_x = parent_width - target_width
+        steps = 15  # 动画步数
+        step_size = (current_x - target_x) / steps
+
+        def animate(step):
+            nonlocal current_x
+            if step < steps:
+                current_x -= step_size
+                self.place_configure(x=current_x)
+                self.after(20, animate, step + 1)  # 20ms间隔
+            else:
+                self.place_configure(x=target_x)
+
+        animate(0)
+
+    def _fade_content(self) -> None:
+        """内容切换淡入淡出效果（简化版，仅更新内容）"""
+        # 简单实现：直接更新内容，后续可以添加真正的淡入淡出动画
+        pass
 
     def hide(self) -> None:
         """隐藏侧边栏"""
-        raise NotImplementedError("将在后续任务中实现")
+        if not self.is_visible:
+            return
+
+        # 执行滑出动画
+        parent_width = self.master.winfo_width()
+        current_x = self.winfo_x()
+        target_x = parent_width
+        steps = 15
+        step_size = (target_x - current_x) / steps
+
+        def animate(step):
+            nonlocal current_x
+            if step < steps:
+                current_x += step_size
+                self.place_configure(x=current_x)
+                self.after(20, animate, step + 1)
+            else:
+                self.place_forget()
+                self.is_visible = False
+
+        animate(0)
 
     def toggle_pin(self) -> None:
-        """切换固定状态(固定后不会自动隐藏)"""
-        raise NotImplementedError("将在后续任务中实现")
+        """切换固定状态（固定后不会自动隐藏）"""
+        self.is_pinned = not self.is_pinned
+
+        # 更新固定按钮视觉状态
+        if hasattr(self, 'pin_button'):
+            if self.is_pinned:
+                self.pin_button.configure(fg_color="#FFD43B", text="📌 已固定")
+            else:
+                self.pin_button.configure(fg_color="#E9ECEF", text="📌 固定")
+
+        print(f"固定状态: {'已固定' if self.is_pinned else '未固定'}")
