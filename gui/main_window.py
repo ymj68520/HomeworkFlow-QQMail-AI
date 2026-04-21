@@ -1,7 +1,5 @@
 import customtkinter as ctk
 from tkinter import ttk, messagebox
-import asyncio
-from datetime import datetime
 from typing import List
 from database.operations import db
 from config.settings import settings
