@@ -43,6 +43,9 @@ class MainWindow(ctk.CTk):
         # 启动后台监听
         self.start_background_monitoring()
 
+        # 绑定ESC键关闭侧边栏
+        self.bind("<Escape>", lambda e: self._on_esc_key())
+
         # 延迟加载数据（避免阻塞UI启动）
         self.after(100, self.load_data)
 
@@ -1049,3 +1052,9 @@ class MainWindow(ctk.CTk):
         monitor_thread = threading.Thread(target=run_monitoring, daemon=True)
         monitor_thread.start()
         self.status_label.configure(text="状态: 后台监听已启动")
+
+    def _on_esc_key(self) -> None:
+        """处理ESC按键事件，关闭预览侧边栏"""
+        if hasattr(self, 'preview_drawer') and self.preview_drawer.is_visible and not self.preview_drawer.is_pinned:
+            self.preview_drawer.hide()
+            self.update()
