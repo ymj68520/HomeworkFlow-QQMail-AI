@@ -36,4 +36,12 @@ drawer.pack(fill="both", expand=True)
 drawer._update_student_card(test_data)
 drawer._update_email_card(test_email_data)
 
+# 测试作业信息卡片
+test_assignment_data = {
+    'assignment_name': 'Python程序设计作业1',
+    'local_path': 'D:/submissions/作业1/2021001张三',
+    'id': 42
+}
+drawer._update_assignment_card(test_assignment_data)
+
 root.mainloop()

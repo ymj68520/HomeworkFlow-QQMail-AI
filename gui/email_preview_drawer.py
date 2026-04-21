@@ -17,6 +17,9 @@ class StudentData(TypedDict, total=False):
     received_time: Optional[datetime]
     submission_time: Optional[datetime]
     email_uid: str
+    assignment_name: str
+    local_path: Optional[str]
+    id: Optional[int]
 
 class EmailPreviewDrawer(ctk.CTkFrame):
     """邮件预览侧边栏 - 从右侧滑入显示邮件详情"""
@@ -269,6 +272,70 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             text_color="gray"
         )
         uid_label.pack(anchor="w")
+
+    def _update_assignment_card(self, data: StudentData) -> None:
+        """更新作业信息卡片
+
+        Args:
+            data: 包含作业信息的字典
+        """
+        # 清空现有内容
+        for widget in self.card_assignment.content_frame.winfo_children():
+            widget.destroy()
+
+        # 作业名称
+        assignment_name = data.get('assignment_name', '未设置')
+        name_label = ctk.CTkLabel(
+            self.card_assignment.content_frame,
+            text=f"作业名称: {assignment_name}",
+            font=("Arial", self.FONT_SIZE_TITLE, "bold")
+        )
+        name_label.pack(anchor="w", pady=(0, self.PADDING_CARD))
+
+        # 本地存储路径
+        local_path = data.get('local_path')
+        if local_path:
+            # 可点击的路径标签
+            path_button = ctk.CTkButton(
+                self.card_assignment.content_frame,
+                text=f"📁 {local_path}",
+                command=lambda: self._copy_path_to_clipboard(local_path),
+                anchor="w",
+                fg_color="#E9ECEF",
+                text_color="black",
+                hover_color="#DEE2E6"
+            )
+            path_button.pack(fill="x", pady=(0, self.PADDING_SECTION))
+        else:
+            no_path_label = ctk.CTkLabel(
+                self.card_assignment.content_frame,
+                text="本地路径: 未下载",
+                font=("Arial", self.FONT_SIZE_NORMAL),
+                text_color="gray"
+            )
+            no_path_label.pack(anchor="w", pady=(0, self.PADDING_SECTION))
+
+        # 数据库记录ID
+        record_id = data.get('id')
+        if record_id:
+            id_label = ctk.CTkLabel(
+                self.card_assignment.content_frame,
+                text=f"数据库ID: {record_id}",
+                font=("Arial", 10),
+                text_color="gray"
+            )
+            id_label.pack(anchor="w")
+
+    def _copy_path_to_clipboard(self, path: str) -> None:
+        """复制路径到剪贴板
+
+        Args:
+            path: 要复制的文件路径
+        """
+        root = self.winfo_toplevel()
+        root.clipboard_clear()
+        root.clipboard_append(path)
+        print(f"已复制路径: {path}")
 
     def _setup_control_bar(self) -> None:
         """设置顶部控制栏（将在后续任务中实现）"""
