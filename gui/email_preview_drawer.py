@@ -470,12 +470,12 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             size_bytes /= 1024.0
         return f"{size_bytes:.1f} TB"
 
-    def _open_file(self, file_path: str) -> None:
-        """打开文件（跨平台）
+    def _open_file(self, file_path: str):
+        """打开文件（跨平台）"""
+        if not os.path.exists(file_path):
+            self._show_error("文件不存在", f"文件已被移动或删除：\n{file_path}")
+            return
 
-        Args:
-            file_path: 文件路径
-        """
         try:
             import platform
             import subprocess
@@ -488,16 +488,18 @@ class EmailPreviewDrawer(ctk.CTkFrame):
                 subprocess.call(['xdg-open', file_path])
 
             print(f"已打开文件: {file_path}")
+        except PermissionError:
+            self._show_error("权限不足", "没有权限打开此文件，请检查文件权限")
         except Exception as e:
             print(f"打开文件失败: {e}")
             self._show_error("打开失败", f"无法打开文件：\n{str(e)}")
 
-    def _open_folder(self, file_path: str) -> None:
-        """在文件管理器中定位文件
+    def _open_folder(self, file_path: str):
+        """在文件管理器中定位文件"""
+        if not os.path.exists(file_path):
+            self._show_error("文件不存在", f"文件已被移动或删除：\n{file_path}")
+            return
 
-        Args:
-            file_path: 文件路径
-        """
         try:
             import platform
             import subprocess
@@ -510,17 +512,14 @@ class EmailPreviewDrawer(ctk.CTkFrame):
                 subprocess.call(['nautilus', file_path])
 
             print(f"已定位文件: {file_path}")
+        except PermissionError:
+            self._show_error("权限不足", "没有权限访问此文件夹")
         except Exception as e:
             print(f"定位文件失败: {e}")
             self._show_error("定位失败", f"无法定位文件：\n{str(e)}")
 
-    def _rename_file(self, file_path: str, old_name: str) -> None:
-        """重命名文件
-
-        Args:
-            file_path: 文件路径
-            old_name: 原文件名
-        """
+    def _rename_file(self, file_path: str, old_name: str):
+        """重命名文件"""
         from tkinter import simpledialog
 
         new_name = simpledialog.askstring(
@@ -532,14 +531,8 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         if not new_name or new_name == old_name:
             return
 
-        # 验证文件名（防止路径遍历攻击）
-        if os.path.basename(new_name) != new_name:
-            self._show_error("重命名失败", "文件名不能包含路径字符")
-            return
-
-        # 验证文件名不为空
-        if not new_name.strip():
-            self._show_error("重命名失败", "文件名不能为空")
+        if not os.path.exists(file_path):
+            self._show_error("文件不存在", f"文件已被移动或删除：\n{file_path}")
             return
 
         try:
@@ -547,7 +540,10 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             directory = os.path.dirname(file_path)
             new_path = os.path.join(directory, new_name)
 
-            # 移动文件（会自动处理文件已存在的情况）
+            if os.path.exists(new_path):
+                self._show_error("重命名失败", f"目标文件名已存在：\n{new_name}")
+                return
+
             shutil.move(file_path, new_path)
             print(f"已重命名: {old_name} -> {new_name}")
 
@@ -555,17 +551,11 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             self._show_info("重命名成功", f"文件已重命名为：\n{new_name}")
 
             # 刷新当前显示
-            if self.current_submission_data:
-                self._update_attachments_card(self.current_submission_data)
+            if self.current_data:
+                self.show(self.current_data)
 
-        except shutil.Error as e:
-            # 处理文件已存在或其他错误
-            error_msg = str(e)
-            if "exists" in error_msg.lower():
-                self._show_error("重命名失败", "目标文件名已存在")
-            else:
-                self._show_error("重命名失败", f"无法重命名文件：\n{error_msg}")
-
+        except PermissionError:
+            self._show_error("权限不足", "没有权限重命名此文件")
         except Exception as e:
             print(f"重命名失败: {e}")
             self._show_error("重命名失败", f"无法重命名文件：\n{str(e)}")
@@ -633,14 +623,18 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         )
         close_button.pack(side="left")
 
-    def show(self, submission_data: StudentData) -> None:
-        """显示/更新侧边栏
+    def show(self, submission_data: Dict):
+        """显示/更新侧边栏"""
+        self.current_data = submission_data
 
-        Args:
-            submission_data: 包含提交信息的字典
-        """
-        self.current_submission_data = submission_data
+        # 显示加载状态
+        self.title_label.configure(text="加载中...")
 
+        # 使用after避免阻塞UI
+        self.after(10, self._load_data, submission_data)
+
+    def _load_data(self, submission_data: Dict):
+        """加载数据（在after回调中执行）"""
         # 更新标题栏
         student_id = submission_data.get('student_id', 'Unknown')
         name = submission_data.get('name', 'Unknown')
