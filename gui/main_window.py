@@ -805,8 +805,70 @@ class MainWindow(ctk.CTk):
         if not confirmed:
             return
 
-        # 暂时显示成功消息
-        messagebox.showinfo("提示", f"将删除 {len(submissions)} 条记录（功能待完善）")
+        # 禁用窗口
+        self.configure(cursor="watch")
+        self.update()
+        self.status_label.configure(text="状态: 批量删除中...")
+
+        success_count = 0
+        failed_count = 0
+        failed_items = []
+
+        try:
+            from storage.manager import storage_manager
+
+            for idx, sub in enumerate(submissions):
+                try:
+                    self.status_label.configure(
+                        text=f"状态: 正在删除第 {idx+1}/{len(submissions)} 项..."
+                    )
+                    self.update()
+
+                    # 删除本地文件
+                    if sub['local_path']:
+                        storage_manager.delete_files(sub['local_path'])
+
+                    # 从数据库删除（级联删除附件记录）
+                    deleted = db.delete_submission(sub['id'])
+
+                    if deleted:
+                        success_count += 1
+                    else:
+                        failed_items.append(f"{sub['student_id']} - {sub['name']}: 数据库删除失败")
+                        failed_count += 1
+
+                except Exception as e:
+                    # 即使文件删除失败，也尝试删除数据库记录以保持一致性
+                    try:
+                        db.delete_submission(sub['id'])
+                        failed_items.append(f"{sub['student_id']} - {sub['name']}: 文件删除失败但数据库已删除")
+                        failed_count += 1
+                    except:
+                        failed_items.append(f"{sub['student_id']} - {sub['name']}: 删除完全失败: {str(e)}")
+                        failed_count += 1
+
+            # 清除选择
+            self.on_clear_selection()
+
+            # 刷新数据
+            self.load_data()
+
+            # 显示结果
+            message = f"批量删除完成！\n\n成功: {success_count} 项\n失败: {failed_count} 项"
+            if failed_items:
+                message += "\n\n失败详情:\n" + "\n".join(failed_items[:5])
+                if len(failed_items) > 5:
+                    message += f"\n... 还有 {len(failed_items)-5} 项"
+
+            messagebox.showinfo("批量删除结果", message)
+
+        except Exception as e:
+            messagebox.showerror("错误", f"批量删除失败: {str(e)}")
+
+        finally:
+            # 恢复窗口
+            self.configure(cursor="")
+            self.status_label.configure(text="状态: 就绪")
 
     def on_export_excel(self):
         """导出Excel"""
