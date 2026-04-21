@@ -480,11 +480,20 @@ class MainWindow(ctk.CTk):
     def on_select_all(self):
         """全选"""
         items = self.tree.get_children()
-        self.tree.selection_set(items)
+        for item_id in items:
+            self.checked_items[item_id] = True
+            self.tree.set(item_id, "select", "☑")
+
+        self.update_selected_count()
 
     def on_clear_selection(self):
         """清除选择"""
-        self.tree.selection_remove(self.tree.selection())
+        items = self.tree.get_children()
+        for item_id in items:
+            self.checked_items[item_id] = False
+            self.tree.set(item_id, "select", "☐")
+
+        self.update_selected_count()
 
     def toggle_checkbox(self, item_id):
         """切换单行的复选框状态
