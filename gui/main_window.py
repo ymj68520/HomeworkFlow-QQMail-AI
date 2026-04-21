@@ -539,25 +539,29 @@ class MainWindow(ctk.CTk):
         Args:
             event: 事件对象
         """
-        # 识别点击的条目
-        region = self.tree.identify("region", event.x, event.y)
-        if region != "cell":
-            return
+        try:
+            # 识别点击的条目
+            region = self.tree.identify("region", event.x, event.y)
+            if region != "cell":
+                return
 
-        # 获取点击的条目
-        item = self.tree.identify_row(event.y)
-        if not item:
-            return
+            # 获取点击的条目
+            item = self.tree.identify_row(event.y)
+            if not item:
+                return
 
-        # 获取该条目的数据
-        index = self.tree.index(item)
-        if 0 <= index < len(self.filtered_submissions):
-            submission_data = self.filtered_submissions[index]
+            # 获取该条目的数据
+            index = self.tree.index(item)
+            if 0 <= index < len(self.filtered_submissions):
+                submission_data = self.filtered_submissions[index]
 
-            # 显示预览侧边栏
-            self.preview_drawer.show(submission_data)
+                # 显示预览侧边栏
+                self.preview_drawer.show(submission_data)
 
-            print(f"已打开预览: {submission_data.get('student_id')} - {submission_data.get('name')}")
+        except Exception as e:
+            print(f"打开预览失败: {e}")
+            from tkinter import messagebox
+            messagebox.showerror("预览错误", f"无法打开邮件预览：\n{str(e)}")
 
     def on_tree_select(self, event):
         """表格选择事件"""
