@@ -1053,8 +1053,7 @@ class MainWindow(ctk.CTk):
         monitor_thread.start()
         self.status_label.configure(text="状态: 后台监听已启动")
 
-    def _on_esc_key(self) -> None:
-        """处理ESC按键事件，关闭预览侧边栏"""
-        if hasattr(self, 'preview_drawer') and self.preview_drawer.is_visible and not self.preview_drawer.is_pinned:
+    def _on_esc_key(self):
+        """处理ESC键，关闭侧边栏"""
+        if hasattr(self, 'preview_drawer') and self.preview_drawer.is_visible:
             self.preview_drawer.hide()
-            self.update()
