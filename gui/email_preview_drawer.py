@@ -65,10 +65,10 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        """初始化UI组件
+        """初始化UI组件"""
+        # 顶部控制栏（固定按钮和关闭按钮）- 必须最先创建
+        self._setup_control_bar()
 
-        内容将在后续任务中添加
-        """
         # 滚动容器（支持内容过多时滚动）
         self.scroll_frame = ctk.CTkScrollableFrame(self, label_text="邮件详情")
         self.scroll_frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -88,9 +88,6 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         # 卡片4: 附件列表
         self.card_attachments = self._create_card("附件列表")
         self.card_attachments.pack(fill="x", pady=(0, 15))
-
-        # 顶部控制栏（固定按钮和关闭按钮）
-        self._setup_control_bar()
 
     def _create_card(self, title: str) -> ctk.CTkFrame:
         """创建信息卡片
