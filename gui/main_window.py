@@ -509,19 +509,24 @@ class MainWindow(ctk.CTk):
 
         self.refresh_table()
 
-    def on_tree_click(self, event):
-        """处理 Treeview 点击事件，切换复选框状态"""
+    def on_tree_click(self, event) -> None:
+        """处理 Treeview 点击事件，切换复选框状态或关闭侧边栏
+
+        Args:
+            event: 事件对象
+        """
         # 识别点击的列和区域
         region = self.tree.identify("region", event.x, event.y)
-        if region != "cell":
+
+        # 如果点击的不是cell区域（例如空白区域），检查是否需要关闭侧边栏
+        if region != "cell" and region != "heading":
+            if hasattr(self, 'preview_drawer') and self.preview_drawer.is_visible and not self.preview_drawer.is_pinned:
+                self.preview_drawer.hide()
             return
 
         column = self.tree.identify("column", event.x, event.y)
 
-        # "select" 列是第 1 列（索引从 0 或 1 开始，取决于 Treeview）
-        # Treeview 的列索引：#0 是图标列，#1 是第一列
-        # 我们的 "select" 列应该是 #1
-
+        # "select" 列是第1列
         if column != "#1":
             return
 
