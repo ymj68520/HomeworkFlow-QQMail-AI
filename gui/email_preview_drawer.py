@@ -5,6 +5,16 @@ from typing import Dict, TypedDict, Optional
 from datetime import datetime
 
 
+def _ease_out_cubic(t: float) -> float:
+    """缓动函数：先快后慢（用于滑入）"""
+    return 1 - pow(1 - t, 3)
+
+
+def _ease_in_cubic(t: float) -> float:
+    """缓动函数：先慢后快（用于滑出）"""
+    return pow(t, 3)
+
+
 class StudentData(TypedDict, total=False):
     """学生信息数据结构"""
     student_id: str
@@ -61,8 +71,17 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         self.current_data = None  # 当前显示的提交数据
         self.current_submission_data = None  # 当前显示的提交数据（用于刷新）
 
+        # Animation state
+        self._animation_id = None
+
         # 初始化UI
         self._setup_ui()
+
+    def _cancel_animation(self) -> None:
+        """取消当前正在进行的动画"""
+        if self._animation_id is not None:
+            self.after_cancel(self._animation_id)
+            self._animation_id = None
 
     def _setup_ui(self) -> None:
         """初始化UI组件"""
@@ -642,8 +661,11 @@ class EmailPreviewDrawer(ctk.CTkFrame):
 
         self.is_visible = True
 
-    def _slide_in(self):
+    def _slide_in(self) -> None:
         """滑入动画 - 优化版"""
+        # 取消现有动画
+        self._cancel_animation()
+
         # 计算目标宽度
         parent_width = self.master.winfo_width()
         target_width = int(parent_width * self.width_ratio)
@@ -660,20 +682,17 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         fps = 60
         total_frames = int(duration * fps / 1000)
 
-        def ease_out_cubic(t):
-            """缓动函数：先快后慢"""
-            return 1 - pow(1 - t, 3)
-
         def animate(frame):
             nonlocal current_x
             if frame < total_frames:
                 progress = frame / total_frames
-                eased_progress = ease_out_cubic(progress)
+                eased_progress = _ease_out_cubic(progress)
                 current_x = parent_width - (parent_width - target_x) * eased_progress
                 self.place_configure(x=current_x)
-                self.after(int(1000 / fps), animate, frame + 1)
+                self._animation_id = self.after(int(1000 // fps), animate, frame + 1)
             else:
                 self.place_configure(x=target_x)
+                self._animation_id = None
 
         animate(0)
 
@@ -682,10 +701,13 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         # 简单实现：直接更新内容，后续可以添加真正的淡入淡出动画
         pass
 
-    def hide(self):
+    def hide(self) -> None:
         """隐藏侧边栏 - 优化动画"""
         if not self.is_visible:
             return
+
+        # 取消现有动画
+        self._cancel_animation()
 
         # 执行滑出动画
         parent_width = self.master.winfo_width()
@@ -695,21 +717,18 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         fps = 60
         total_frames = int(duration * fps / 1000)
 
-        def ease_in_cubic(t):
-            """缓动函数：先慢后快"""
-            return pow(t, 3)
-
         def animate(frame):
             nonlocal current_x
             if frame < total_frames:
                 progress = frame / total_frames
-                eased_progress = ease_in_cubic(progress)
+                eased_progress = _ease_in_cubic(progress)
                 current_x += (target_x - current_x) * eased_progress
                 self.place_configure(x=current_x)
-                self.after(int(1000 / fps), animate, frame + 1)
+                self._animation_id = self.after(int(1000 // fps), animate, frame + 1)
             else:
                 self.place_forget()
                 self.is_visible = False
+                self._animation_id = None
 
         animate(0)
 
