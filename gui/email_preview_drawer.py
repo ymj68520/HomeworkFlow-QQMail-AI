@@ -59,6 +59,7 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         self.is_pinned = False  # 是否固定显示(不自动隐藏)
         self.is_visible = False # 当前是否可见
         self.current_data = None  # 当前显示的提交数据
+        self.current_submission_data = None  # 当前显示的提交数据（用于刷新）
 
         # 初始化UI
         self._setup_ui()
@@ -512,26 +513,46 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             initialvalue=old_name
         )
 
-        if new_name and new_name != old_name:
-            try:
-                import shutil
-                directory = os.path.dirname(file_path)
-                new_path = os.path.join(directory, new_name)
+        if not new_name or new_name == old_name:
+            return
 
-                if os.path.exists(new_path):
-                    self._show_error("重命名失败", "目标文件名已存在")
-                    return
+        # 验证文件名（防止路径遍历攻击）
+        if os.path.basename(new_name) != new_name:
+            self._show_error("重命名失败", "文件名不能包含路径字符")
+            return
 
-                shutil.move(file_path, new_path)
-                print(f"已重命名: {old_name} -> {new_name}")
+        # 验证文件名不为空
+        if not new_name.strip():
+            self._show_error("重命名失败", "文件名不能为空")
+            return
 
-                # 刷新当前显示
-                if self.current_data:
-                    self.show(self.current_data)
+        try:
+            import shutil
+            directory = os.path.dirname(file_path)
+            new_path = os.path.join(directory, new_name)
 
-            except Exception as e:
-                print(f"重命名失败: {e}")
-                self._show_error("重命名失败", f"无法重命名文件：\n{str(e)}")
+            # 移动文件（会自动处理文件已存在的情况）
+            shutil.move(file_path, new_path)
+            print(f"已重命名: {old_name} -> {new_name}")
+
+            # 显示成功消息
+            self._show_info("重命名成功", f"文件已重命名为：\n{new_name}")
+
+            # 刷新当前显示
+            if self.current_submission_data:
+                self._update_attachments_card(self.current_submission_data)
+
+        except shutil.Error as e:
+            # 处理文件已存在或其他错误
+            error_msg = str(e)
+            if "exists" in error_msg.lower():
+                self._show_error("重命名失败", "目标文件名已存在")
+            else:
+                self._show_error("重命名失败", f"无法重命名文件：\n{error_msg}")
+
+        except Exception as e:
+            print(f"重命名失败: {e}")
+            self._show_error("重命名失败", f"无法重命名文件：\n{str(e)}")
 
     def _show_error(self, title: str, message: str) -> None:
         """显示错误对话框
@@ -543,17 +564,29 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         from tkinter import messagebox
         messagebox.showerror(title, message)
 
+    def _show_info(self, title: str, message: str) -> None:
+        """显示信息对话框
+
+        Args:
+            title: 对话框标题
+            message: 信息消息
+        """
+        from tkinter import messagebox
+        messagebox.showinfo(title, message)
+
     def _setup_control_bar(self) -> None:
         """设置顶部控制栏（将在后续任务中实现）"""
         pass
 
-    def show(self, submission_data: Dict) -> None:
+    def show(self, submission_data: StudentData) -> None:
         """显示/更新侧边栏
 
         Args:
             submission_data: 包含提交信息的字典
         """
-        raise NotImplementedError("将在后续任务中实现")
+        self.current_submission_data = submission_data
+        # TODO: 在后续任务中实现完整功能
+        # For now, just update the data without UI
 
     def hide(self) -> None:
         """隐藏侧边栏"""
