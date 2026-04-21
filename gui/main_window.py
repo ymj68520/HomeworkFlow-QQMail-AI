@@ -559,7 +559,6 @@ class MainWindow(ctk.CTk):
                 self.preview_drawer.show(submission_data)
 
         except Exception as e:
-            print(f"打开预览失败: {e}")
             from tkinter import messagebox
             messagebox.showerror("预览错误", f"无法打开邮件预览：\n{str(e)}")
 
