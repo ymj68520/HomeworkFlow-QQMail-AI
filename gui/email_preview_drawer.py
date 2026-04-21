@@ -1,4 +1,5 @@
 """邮件预览侧边栏组件"""
+import os
 import customtkinter as ctk
 from typing import Dict, TypedDict, Optional
 from datetime import datetime
@@ -20,6 +21,7 @@ class StudentData(TypedDict, total=False):
     assignment_name: str
     local_path: Optional[str]
     id: Optional[int]
+    attachments: list  # List of attachment dicts
 
 class EmailPreviewDrawer(ctk.CTkFrame):
     """邮件预览侧边栏 - 从右侧滑入显示邮件详情"""
@@ -336,6 +338,210 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         root.clipboard_clear()
         root.clipboard_append(path)
         print(f"已复制路径: {path}")
+
+    def _update_attachments_card(self, data: StudentData) -> None:
+        """更新附件列表卡片
+
+        Args:
+            data: 包含附件信息的字典
+        """
+        # 清空现有内容
+        for widget in self.card_attachments.content_frame.winfo_children():
+            widget.destroy()
+
+        attachments = data.get('attachments', [])
+
+        if not attachments:
+            # 空状态
+            empty_label = ctk.CTkLabel(
+                self.card_attachments.content_frame,
+                text="无附件",
+                font=("Arial", self.FONT_SIZE_NORMAL),
+                text_color="gray"
+            )
+            empty_label.pack(anchor="w", pady=8)
+            return
+
+        # 为每个附件创建操作行
+        for idx, attachment in enumerate(attachments):
+            self._create_attachment_row(attachment, idx)
+
+    def _create_attachment_row(self, attachment: Dict, idx: int) -> None:
+        """创建附件操作行
+
+        Args:
+            attachment: 附件信息字典
+            idx: 附件索引
+        """
+        # 附件行容器
+        row_frame = ctk.CTkFrame(self.card_attachments.content_frame, fg_color="transparent")
+        row_frame.pack(fill="x", pady=(0, self.PADDING_SECTION))
+
+        # 文件名（可换行）
+        filename = attachment.get('filename', '未命名')
+        if len(filename) > 50:
+            filename = filename[:47] + "..."
+
+        name_label = ctk.CTkLabel(
+            row_frame,
+            text=f"📄 {filename}",
+            font=("Arial", 10),
+            anchor="w"
+        )
+        name_label.pack(side="left", fill="x", expand=True)
+
+        # 文件大小
+        size = attachment.get('size', 0)
+        size_str = self._format_size(size)
+        size_label = ctk.CTkLabel(
+            row_frame,
+            text=size_str,
+            font=("Arial", 9),
+            text_color="gray",
+            width=80
+        )
+        size_label.pack(side="left", padx=(self.PADDING_SECTION, 0))
+
+        # 操作按钮容器
+        button_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
+        button_frame.pack(side="left", padx=(self.PADDING_SECTION, 0))
+
+        # 打开文件按钮
+        file_path = attachment.get('path')
+        if file_path and os.path.exists(file_path):
+            open_btn = ctk.CTkButton(
+                button_frame,
+                text="打开",
+                width=50,
+                height=28,
+                command=lambda p=file_path: self._open_file(p)
+            )
+            open_btn.pack(side="left", padx=(0, 4))
+
+            # 打开文件夹按钮
+            folder_btn = ctk.CTkButton(
+                button_frame,
+                text="定位",
+                width=50,
+                height=28,
+                command=lambda p=file_path: self._open_folder(p)
+            )
+            folder_btn.pack(side="left", padx=(0, 4))
+
+            # 重命名按钮
+            rename_btn = ctk.CTkButton(
+                button_frame,
+                text="重命名",
+                width=50,
+                height=28,
+                command=lambda p=file_path, n=filename: self._rename_file(p, n)
+            )
+            rename_btn.pack(side="left")
+
+    def _format_size(self, size_bytes: int) -> str:
+        """格式化文件大小
+
+        Args:
+            size_bytes: 文件大小（字节）
+
+        Returns:
+            格式化后的文件大小字符串
+        """
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.1f} TB"
+
+    def _open_file(self, file_path: str) -> None:
+        """打开文件（跨平台）
+
+        Args:
+            file_path: 文件路径
+        """
+        try:
+            import platform
+            import subprocess
+
+            if platform.system() == 'Windows':
+                os.startfile(file_path)
+            elif platform.system() == 'Darwin':  # macOS
+                subprocess.call(['open', file_path])
+            else:  # Linux
+                subprocess.call(['xdg-open', file_path])
+
+            print(f"已打开文件: {file_path}")
+        except Exception as e:
+            print(f"打开文件失败: {e}")
+            self._show_error("打开失败", f"无法打开文件：\n{str(e)}")
+
+    def _open_folder(self, file_path: str) -> None:
+        """在文件管理器中定位文件
+
+        Args:
+            file_path: 文件路径
+        """
+        try:
+            import platform
+            import subprocess
+
+            if platform.system() == 'Windows':
+                subprocess.call(['explorer', '/select,', file_path])
+            elif platform.system() == 'Darwin':  # macOS
+                subprocess.call(['open', '-R', file_path])
+            else:  # Linux
+                subprocess.call(['nautilus', file_path])
+
+            print(f"已定位文件: {file_path}")
+        except Exception as e:
+            print(f"定位文件失败: {e}")
+            self._show_error("定位失败", f"无法定位文件：\n{str(e)}")
+
+    def _rename_file(self, file_path: str, old_name: str) -> None:
+        """重命名文件
+
+        Args:
+            file_path: 文件路径
+            old_name: 原文件名
+        """
+        from tkinter import simpledialog
+
+        new_name = simpledialog.askstring(
+            "重命名文件",
+            f"原文件名: {old_name}\n\n请输入新文件名:",
+            initialvalue=old_name
+        )
+
+        if new_name and new_name != old_name:
+            try:
+                import shutil
+                directory = os.path.dirname(file_path)
+                new_path = os.path.join(directory, new_name)
+
+                if os.path.exists(new_path):
+                    self._show_error("重命名失败", "目标文件名已存在")
+                    return
+
+                shutil.move(file_path, new_path)
+                print(f"已重命名: {old_name} -> {new_name}")
+
+                # 刷新当前显示
+                if self.current_data:
+                    self.show(self.current_data)
+
+            except Exception as e:
+                print(f"重命名失败: {e}")
+                self._show_error("重命名失败", f"无法重命名文件：\n{str(e)}")
+
+    def _show_error(self, title: str, message: str) -> None:
+        """显示错误对话框
+
+        Args:
+            title: 对话框标题
+            message: 错误消息
+        """
+        from tkinter import messagebox
+        messagebox.showerror(title, message)
 
     def _setup_control_bar(self) -> None:
         """设置顶部控制栏（将在后续任务中实现）"""

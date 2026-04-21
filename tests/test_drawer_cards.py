@@ -5,6 +5,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from gui.email_preview_drawer import EmailPreviewDrawer
 import customtkinter as ctk
 from datetime import datetime
+import tempfile
+import os
 
 # 创建测试数据
 test_data = {
@@ -44,4 +46,32 @@ test_assignment_data = {
 }
 drawer._update_assignment_card(test_assignment_data)
 
+# 测试附件卡片
+temp_dir = tempfile.mkdtemp()
+test_file = os.path.join(temp_dir, "test_assignment.py")
+with open(test_file, 'w', encoding='utf-8') as f:
+    f.write("# 测试作业\nprint('Hello World')")
+
+test_attachments_data = {
+    'attachments': [
+        {
+            'filename': 'test_assignment.py',
+            'size': 1024,
+            'path': test_file
+        }
+    ]
+}
+drawer._update_attachments_card(test_attachments_data)
+
+print(f"临时测试文件创建在: {test_file}")
+print("测试窗口已打开，请检查附件卡片是否正确显示")
+
 root.mainloop()
+
+# 清理临时文件
+try:
+    os.remove(test_file)
+    os.rmdir(temp_dir)
+    print("临时文件已清理")
+except:
+    print("临时文件清理失败（可能已被删除）")
