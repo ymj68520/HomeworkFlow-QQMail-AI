@@ -4,6 +4,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from gui.email_preview_drawer import EmailPreviewDrawer
 import customtkinter as ctk
+from datetime import datetime
 
 # 创建测试数据
 test_data = {
@@ -15,6 +16,15 @@ test_data = {
     'is_replied': False
 }
 
+# 测试邮件信息卡片
+test_email_data = {
+    'email_subject': '作业1提交 - Python程序设计',
+    'email_from': '李四 <lisi@example.com>',
+    'received_time': datetime.now(),
+    'submission_time': datetime.now(),
+    'email_uid': '12345'
+}
+
 # 创建窗口
 root = ctk.CTk()
 root.geometry("400x600")
@@ -24,5 +34,6 @@ drawer.pack(fill="both", expand=True)
 
 # 测试更新卡片
 drawer._update_student_card(test_data)
+drawer._update_email_card(test_email_data)
 
 root.mainloop()

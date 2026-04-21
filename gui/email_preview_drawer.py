@@ -1,6 +1,7 @@
 """邮件预览侧边栏组件"""
 import customtkinter as ctk
-from typing import Dict, TypedDict
+from typing import Dict, TypedDict, Optional
+from datetime import datetime
 
 
 class StudentData(TypedDict, total=False):
@@ -11,6 +12,11 @@ class StudentData(TypedDict, total=False):
     is_late: bool
     is_downloaded: bool
     is_replied: bool
+    email_subject: str
+    email_from: str
+    received_time: Optional[datetime]
+    submission_time: Optional[datetime]
+    email_uid: str
 
 class EmailPreviewDrawer(ctk.CTkFrame):
     """邮件预览侧边栏 - 从右侧滑入显示邮件详情"""
@@ -187,6 +193,82 @@ class EmailPreviewDrawer(ctk.CTkFrame):
                 pady=self.PADDING_BADGE
             )
             replied_label.pack(side="left")
+
+    def _update_email_card(self, data: StudentData) -> None:
+        """更新邮件信息卡片
+
+        Args:
+            data: 包含邮件信息的字典
+        """
+        # 清空现有内容
+        for widget in self.card_email.content_frame.winfo_children():
+            widget.destroy()
+
+        # 邮件主题（大标题）
+        subject = data.get('email_subject', '未设置')
+        if len(subject) > 100:  # 限制长度
+            subject = subject[:97] + "..."
+
+        subject_label = ctk.CTkLabel(
+            self.card_email.content_frame,
+            text=subject,
+            font=("Arial", self.FONT_SIZE_TITLE, "bold"),
+            wraplength=600
+        )
+        subject_label.pack(anchor="w", pady=(0, self.PADDING_CARD))
+
+        # 发件人
+        email_from = data.get('email_from', '未设置')
+        from_label = ctk.CTkLabel(
+            self.card_email.content_frame,
+            text=f"发件人: {email_from}",
+            font=("Arial", self.FONT_SIZE_NORMAL)
+        )
+        from_label.pack(anchor="w", pady=(0, self.PADDING_SECTION))
+
+        # 收件时间
+        received_time = data.get('received_time')
+        if received_time:
+            if isinstance(received_time, datetime):
+                received_str = received_time.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                received_str = str(received_time)
+        else:
+            received_str = "未设置"
+
+        received_label = ctk.CTkLabel(
+            self.card_email.content_frame,
+            text=f"收件时间: {received_str}",
+            font=("Arial", self.FONT_SIZE_NORMAL)
+        )
+        received_label.pack(anchor="w", pady=(0, self.PADDING_SECTION))
+
+        # 提交时间
+        submission_time = data.get('submission_time')
+        if submission_time:
+            if isinstance(submission_time, datetime):
+                submission_str = submission_time.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                submission_str = str(submission_time)
+        else:
+            submission_str = "未设置"
+
+        submission_label = ctk.CTkLabel(
+            self.card_email.content_frame,
+            text=f"提交时间: {submission_str}",
+            font=("Arial", self.FONT_SIZE_NORMAL)
+        )
+        submission_label.pack(anchor="w", pady=(0, self.PADDING_SECTION))
+
+        # 邮件UID（小号灰色）
+        email_uid = data.get('email_uid', '未设置')
+        uid_label = ctk.CTkLabel(
+            self.card_email.content_frame,
+            text=f"UID: {email_uid}",
+            font=("Arial", 9),
+            text_color="gray"
+        )
+        uid_label.pack(anchor="w")
 
     def _setup_control_bar(self) -> None:
         """设置顶部控制栏（将在后续任务中实现）"""
