@@ -642,8 +642,8 @@ class EmailPreviewDrawer(ctk.CTkFrame):
 
         self.is_visible = True
 
-    def _slide_in(self) -> None:
-        """滑入动画"""
+    def _slide_in(self):
+        """滑入动画 - 优化版"""
         # 计算目标宽度
         parent_width = self.master.winfo_width()
         target_width = int(parent_width * self.width_ratio)
@@ -653,18 +653,25 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         self.place(x=parent_width, y=0, relheight=1)
         self.place_configure(width=target_width)
 
-        # 执行滑入动画
+        # 执行滑入动画（使用缓动函数）
         current_x = parent_width
         target_x = parent_width - target_width
-        steps = 15  # 动画步数
-        step_size = (current_x - target_x) / steps
+        duration = 300  # ms
+        fps = 60
+        total_frames = int(duration * fps / 1000)
 
-        def animate(step):
+        def ease_out_cubic(t):
+            """缓动函数：先快后慢"""
+            return 1 - pow(1 - t, 3)
+
+        def animate(frame):
             nonlocal current_x
-            if step < steps:
-                current_x -= step_size
+            if frame < total_frames:
+                progress = frame / total_frames
+                eased_progress = ease_out_cubic(progress)
+                current_x = parent_width - (parent_width - target_x) * eased_progress
                 self.place_configure(x=current_x)
-                self.after(20, animate, step + 1)  # 20ms间隔
+                self.after(int(1000 / fps), animate, frame + 1)
             else:
                 self.place_configure(x=target_x)
 
@@ -675,8 +682,8 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         # 简单实现：直接更新内容，后续可以添加真正的淡入淡出动画
         pass
 
-    def hide(self) -> None:
-        """隐藏侧边栏"""
+    def hide(self):
+        """隐藏侧边栏 - 优化动画"""
         if not self.is_visible:
             return
 
@@ -684,15 +691,22 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         parent_width = self.master.winfo_width()
         current_x = self.winfo_x()
         target_x = parent_width
-        steps = 15
-        step_size = (target_x - current_x) / steps
+        duration = 300  # ms
+        fps = 60
+        total_frames = int(duration * fps / 1000)
 
-        def animate(step):
+        def ease_in_cubic(t):
+            """缓动函数：先慢后快"""
+            return pow(t, 3)
+
+        def animate(frame):
             nonlocal current_x
-            if step < steps:
-                current_x += step_size
+            if frame < total_frames:
+                progress = frame / total_frames
+                eased_progress = ease_in_cubic(progress)
+                current_x += (target_x - current_x) * eased_progress
                 self.place_configure(x=current_x)
-                self.after(20, animate, step + 1)
+                self.after(int(1000 / fps), animate, frame + 1)
             else:
                 self.place_forget()
                 self.is_visible = False
