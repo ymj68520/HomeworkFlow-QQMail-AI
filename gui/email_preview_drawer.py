@@ -575,8 +575,47 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         messagebox.showinfo(title, message)
 
     def _setup_control_bar(self) -> None:
-        """设置顶部控制栏（将在后续任务中实现）"""
-        pass
+        """设置顶部控制栏"""
+        control_bar = ctk.CTkFrame(self, fg_color="transparent", height=40)
+        control_bar.pack(side="top", fill="x")
+
+        # 左侧：当前条目标题
+        self.title_label = ctk.CTkLabel(
+            control_bar,
+            text="邮件详情",
+            font=("Arial", 12, "bold")
+        )
+        self.title_label.pack(side="left", padx=10, pady=5)
+
+        # 右侧：按钮容器
+        button_container = ctk.CTkFrame(control_bar, fg_color="transparent")
+        button_container.pack(side="right", padx=10)
+
+        # 固定按钮
+        self.pin_button = ctk.CTkButton(
+            button_container,
+            text="📌 固定",
+            width=80,
+            height=30,
+            command=self.toggle_pin,
+            fg_color="#E9ECEF",
+            text_color="black",
+            hover_color="#DEE2E6"
+        )
+        self.pin_button.pack(side="left", padx=(0, 5))
+
+        # 关闭按钮
+        close_button = ctk.CTkButton(
+            button_container,
+            text="✕",
+            width=35,
+            height=30,
+            command=self.hide,
+            fg_color="#FF6B6B",
+            text_color="white",
+            hover_color="#FA5252"
+        )
+        close_button.pack(side="left")
 
     def show(self, submission_data: StudentData) -> None:
         """显示/更新侧边栏
@@ -585,6 +624,11 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             submission_data: 包含提交信息的字典
         """
         self.current_submission_data = submission_data
+
+        # 更新标题栏
+        student_id = submission_data.get('student_id', 'Unknown')
+        name = submission_data.get('name', 'Unknown')
+        self.title_label.configure(text=f"{student_id} - {name}")
 
         # 更新所有卡片
         self._update_student_card(submission_data)
