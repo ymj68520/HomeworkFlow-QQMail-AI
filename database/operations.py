@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, List, Dict
-from database.models import SessionLocal, Student, Assignment, Submission, Attachment, EmailLog, AIExtractionCache
+from database.models import SessionLocal, Student, Assignment, Submission, Attachment, EmailLog
 from sqlalchemy import or_, and_
 
 class DatabaseOperations:
@@ -356,6 +356,8 @@ class DatabaseOperations:
             Dict with keys: student_id, name, assignment_name, confidence, is_fallback
             or None if not found
         """
+        from database.models import AIExtractionCache
+
         cache_entry = self.session.query(AIExtractionCache).filter_by(
             email_uid=email_uid
         ).first()
@@ -379,6 +381,8 @@ class DatabaseOperations:
             result: Dict with student_id, name, assignment_name, confidence
             is_fallback: True if result came from regex fallback
         """
+        from database.models import AIExtractionCache
+
         cache_entry = self.session.query(AIExtractionCache).filter_by(
             email_uid=email_uid
         ).first()
