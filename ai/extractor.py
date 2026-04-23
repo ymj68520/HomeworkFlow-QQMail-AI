@@ -228,6 +228,50 @@ class AIExtractor:
 
         return cache_result
 
+    async def batch_extract(
+        self,
+        email_list: List[Dict],
+        batch_size: int = 10
+    ) -> List[Dict]:
+        """Extract student info from multiple emails concurrently
+
+        Args:
+            email_list: List of email_data dicts with keys: uid, subject, from, attachments
+            batch_size: Number of concurrent AI calls
+
+        Returns:
+            List of extraction results in same order as input
+        """
+        results = []
+
+        # Process in batches to avoid overwhelming the API
+        for i in range(0, len(email_list), batch_size):
+            batch = email_list[i:i+batch_size]
+
+            # Process batch concurrently
+            batch_results = await asyncio.gather(
+                *[self.extract_with_cache(email) for email in batch],
+                return_exceptions=True
+            )
+
+            # Handle exceptions in batch results
+            for j, result in enumerate(batch_results):
+                if isinstance(result, Exception):
+                    print(f"Error processing email {i+j}: {result}")
+                    # Return fallback result for failed emails
+                    batch_results[j] = {
+                        'student_id': None,
+                        'name': None,
+                        'assignment_name': None,
+                        'is_fallback': True,
+                        'confidence': 0.0
+                    }
+
+            results.extend(batch_results)
+            print(f"Processed batch {i//batch_size + 1}/{(len(email_list) + batch_size - 1)//batch_size}")
+
+        return results
+
     def normalize_assignment_name(self, raw_name: str) -> str:
         """
         规范化作业名称为"作业1/2/3/4"格式
