@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, List, Dict
-from database.models import SessionLocal, Student, Assignment, Submission, Attachment, EmailLog
+from database.models import SessionLocal, Student, Assignment, Submission, Attachment, EmailLog, AIExtractionCache
 from sqlalchemy import or_, and_
 
 class DatabaseOperations:
@@ -321,9 +321,17 @@ class DatabaseOperations:
     ) -> int:
         """Mark all versions except the specified one as not latest"""
         try:
-            count = self.session.query(Submission).join(Student).join(Assignment).filter(
-                Student.student_id == student_id,
-                Assignment.name == assignment_name,
+            # First find the student and assignment IDs
+            student = self.session.query(Student).filter_by(student_id=student_id).first()
+            assignment = self.session.query(Assignment).filter_by(name=assignment_name).first()
+
+            if not student or not assignment:
+                return 0
+
+            # Update without JOIN - SQLAlchemy requires this
+            count = self.session.query(Submission).filter(
+                Submission.student_id == student.id,
+                Submission.assignment_id == assignment.id,
                 Submission.version != exclude_version
             ).update({'is_latest': False}, synchronize_session=False)
 
@@ -337,6 +345,69 @@ class DatabaseOperations:
     def close(self):
         """Close database session"""
         self.session.close()
+
+    def get_ai_cache(self, email_uid: str) -> Optional[Dict]:
+        """Get cached AI extraction result
+
+        Args:
+            email_uid: Email UID from IMAP
+
+        Returns:
+            Dict with keys: student_id, name, assignment_name, confidence, is_fallback
+            or None if not found
+        """
+        cache_entry = self.session.query(AIExtractionCache).filter_by(
+            email_uid=email_uid
+        ).first()
+
+        if not cache_entry:
+            return None
+
+        return {
+            'student_id': cache_entry.student_id,
+            'name': cache_entry.name,
+            'assignment_name': cache_entry.assignment_name,
+            'confidence': cache_entry.confidence,
+            'is_fallback': cache_entry.is_fallback
+        }
+
+    def save_ai_cache(self, email_uid: str, result: Dict, is_fallback: bool = False):
+        """Save AI extraction result to cache
+
+        Args:
+            email_uid: Email UID from IMAP
+            result: Dict with student_id, name, assignment_name, confidence
+            is_fallback: True if result came from regex fallback
+        """
+        cache_entry = self.session.query(AIExtractionCache).filter_by(
+            email_uid=email_uid
+        ).first()
+
+        if cache_entry:
+            # Update existing entry
+            cache_entry.student_id = result.get('student_id')
+            cache_entry.name = result.get('name')
+            cache_entry.assignment_name = result.get('assignment_name')
+            cache_entry.confidence = result.get('confidence')
+            cache_entry.is_fallback = is_fallback
+        else:
+            # Create new entry
+            cache_entry = AIExtractionCache(
+                email_uid=email_uid,
+                student_id=result.get('student_id'),
+                name=result.get('name'),
+                assignment_name=result.get('assignment_name'),
+                confidence=result.get('confidence'),
+                is_fallback=is_fallback
+            )
+            self.session.add(cache_entry)
+
+        try:
+            self.session.commit()
+        except Exception as e:
+            self.session.rollback()
+            print(f"Failed to save AI cache: {e}")
+            raise
 
 # Global database operations instance
 db = DatabaseOperations()
