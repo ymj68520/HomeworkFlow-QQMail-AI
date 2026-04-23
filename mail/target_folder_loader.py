@@ -54,12 +54,8 @@ class TargetFolderLoader:
             end_idx = start_idx + per_page
             page_emails = all_emails[start_idx:end_idx]
 
-            submissions = []
-            for email_data in page_emails:
-                # 合并邮件数据、本地文件和数据库信息
-                submission = asyncio.run(self._merge_submission_info_async(email_data))
-                if submission:
-                    submissions.append(submission)
+            # 使用批量异步处理提升性能
+            submissions = asyncio.run(self._batch_merge_submission_info(page_emails))
 
             self.imap.disconnect()
 
@@ -144,6 +140,33 @@ class TargetFolderLoader:
             return parsedate_to_datetime(date_str)
         except:
             return datetime.now()
+
+    async def _batch_merge_submission_info(self, page_emails: List[Dict]) -> List[Dict]:
+        """
+        批量异步处理多源数据合并
+
+        Args:
+            page_emails: 当前页的邮件列表
+
+        Returns:
+            合并后的提交信息列表（过滤掉None值）
+        """
+        # 创建所有异步任务
+        tasks = [self._merge_submission_info_async(email_data) for email_data in page_emails]
+
+        # 使用asyncio.gather并发执行，return_exceptions=True确保部分失败不影响整体
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 过滤掉异常和None值
+        submissions = []
+        for result in results:
+            if isinstance(result, Exception):
+                print(f"Error processing email: {result}")
+                continue
+            if result is not None:
+                submissions.append(result)
+
+        return submissions
 
     async def _merge_submission_info_async(self, email_data) -> Dict:
         """异步版本的多源数据合并"""
