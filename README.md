@@ -59,6 +59,29 @@ submissions/
 └── ...
 ```
 
+## AI Extraction Architecture
+
+The system uses AI for extracting student information from emails:
+
+- **Primary Method:** AI extraction via OpenAI-compatible API
+- **Caching:** Results cached in database for performance
+- **Fallback:** Regex validation only (no direct regex extraction)
+- **Batch Processing:** Concurrent processing for bulk operations
+
+### Extraction Flow
+
+1. Check cache for existing result
+2. If cache miss, call AI extractor
+3. Validate and sanitize AI output with regex
+4. Save result to cache
+5. Return extracted information
+
+### Quality Tracking
+
+- `is_fallback` flag tracks regex fallback usage
+- Target: <5% fallback rate in production
+- Confidence scores stored for analysis
+
 ## GUI功能
 
 - 作业列表展示和筛选
