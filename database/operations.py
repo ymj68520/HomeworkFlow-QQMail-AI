@@ -1,7 +1,9 @@
+import json
 from datetime import datetime
 from typing import Optional, List, Dict
 from database.models import SessionLocal, Student, Assignment, Submission, Attachment, EmailLog
 from sqlalchemy import or_, and_
+import sqlite3
 
 class DatabaseOperations:
     def __init__(self):
@@ -341,6 +343,71 @@ class DatabaseOperations:
             self.session.rollback()
             print(f"Error marking old versions: {e}")
             return 0
+
+    def get_connection(self):
+        """Get raw sqlite3 connection for direct SQL operations"""
+        from config.settings import settings
+        return sqlite3.connect(str(settings.DATABASE_PATH))
+
+    def save_email_body(self, submission_id: int, body_data: Dict) -> bool:
+        """Save email body data to submission
+
+        Args:
+            submission_id: Submission ID
+            body_data: Dict with keys: plain_text, html_markdown, format
+
+        Returns:
+            True on success, False on exception
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            # Serialize body_data to JSON
+            json_data = json.dumps(body_data, ensure_ascii=False)
+
+            cursor.execute(
+                "UPDATE submissions SET email_body = ? WHERE id = ?",
+                (json_data, submission_id)
+            )
+
+            conn.commit()
+            conn.close()
+            return True
+
+        except Exception as e:
+            print(f"Error saving email body: {e}")
+            return False
+
+    def get_email_body(self, submission_id: int) -> Optional[Dict]:
+        """Get email body data from submission
+
+        Args:
+            submission_id: Submission ID
+
+        Returns:
+            Dict with keys: plain_text, html_markdown, format
+            None if not found or on exception
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute(
+                "SELECT email_body FROM submissions WHERE id = ?",
+                (submission_id,)
+            )
+
+            result = cursor.fetchone()
+            conn.close()
+
+            if result and result[0]:
+                return json.loads(result[0])
+            return None
+
+        except Exception as e:
+            print(f"Error getting email body: {e}")
+            return None
 
     def close(self):
         """Close database session"""
