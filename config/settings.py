@@ -14,6 +14,7 @@ class Settings:
         self.LLM_BASE_URL = os.getenv('LLM_BASE_URL')
         self.API_KEY = os.getenv('API_KEY')
         self.LLM_MODEL = os.getenv('LLM_MODEL')
+        self.ENABLE_REPLY = os.getenv('ENABLE_REPLY', 'true').lower() == 'true'
 
         # Email server settings
         self.IMAP_SERVER = "imap.qq.com"
