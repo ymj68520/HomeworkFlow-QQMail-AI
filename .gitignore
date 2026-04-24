@@ -13,6 +13,8 @@ ENV/
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 
@@ -32,10 +34,11 @@ Thumbs.db
 .env.local
 
 # Test & Debug files
-test_*.py
-*_test.py
+/test_*.py
+/*_test.py
 debug/
 *.log
+!tests/
 
 # Claude & Memory
 .claude/

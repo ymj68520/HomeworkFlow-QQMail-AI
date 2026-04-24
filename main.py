@@ -33,16 +33,20 @@ def main():
         print(f"✗ 配置错误: {e}")
         return
 
-    # 启用数据库WAL模式（异步）
+    # 启用数据库WAL模式和异步操作（异步）
     try:
         import asyncio
         from database.models import enable_wal_mode
+        from database.async_operations import async_db
 
         async def init_db():
             await enable_wal_mode()
+            # 初始化后台缓存写入器
+            await async_db.initialize()
 
         asyncio.run(init_db())
         print("✓ 数据库WAL模式已启用")
+        print("✓ 异步数据库操作已初始化")
     except Exception as e:
         print(f"⚠ 数据库初始化警告: {e}")
 

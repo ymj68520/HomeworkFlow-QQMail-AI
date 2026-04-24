@@ -7,13 +7,20 @@ from database.models import (
     AIExtractionCache
 )
 from datetime import datetime
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class AsyncDatabaseOperations:
     """异步数据库操作类"""
 
     def __init__(self):
-        pass
+        # 创建后台任务队列用于缓存写入
+        self._cache_write_queue = asyncio.Queue()
+        self._cache_writer_task = None
+        self._initialized = False
 
     async def get_submission_by_uid(self, email_uid: str) -> Optional[Submission]:
         """通过email_uid获取提交记录"""
@@ -237,19 +244,50 @@ class AsyncDatabaseOperations:
                 'is_fallback': cache_entry.is_fallback
             }
 
-    async def save_ai_cache(
-        self,
-        email_uid: str,
-        result: Dict,
-        is_fallback: bool = False,
-        max_retries: int = 3
-    ):
-        """保存AI提取结果到缓存（带重试机制）"""
-        import asyncio
-        from sqlalchemy.exc import OperationalError
+    async def initialize(self):
+        """初始化后台缓存写入器"""
+        if self._initialized:
+            return
 
-        for attempt in range(max_retries):
+        self._cache_writer_task = asyncio.create_task(self._cache_writer_loop())
+        self._initialized = True
+        logger.info("Async database operations initialized with background cache writer")
+
+    async def close(self):
+        """关闭后台任务"""
+        if self._cache_writer_task:
+            # 停止后台任务
+            await self._cache_write_queue.put(None)  # 发送停止信号
             try:
+                await asyncio.wait_for(self._cache_writer_task, timeout=5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                # 超时或被取消，尝试优雅停止
+                logger.warning("Cache writer task did not stop gracefully, cancelling")
+                # 取消任务
+                if not self._cache_writer_task.done():
+                    self._cache_writer_task.cancel()
+                    try:
+                        await self._cache_writer_task
+                    except asyncio.CancelledError:
+                        pass  # Task was cancelled, expected
+            self._cache_writer_task = None
+        self._initialized = False
+
+    async def _cache_writer_loop(self):
+        """后台缓存写入循环 - 在独立任务中运行"""
+        logger.info("Background cache writer started")
+
+        while True:
+            cache_data = await self._cache_write_queue.get()
+
+            # None 是停止信号
+            if cache_data is None:
+                break
+
+            try:
+                email_uid, result, is_fallback = cache_data
+
+                # 使用单独的session避免与主流程冲突
                 async with get_async_session()() as session:
                     cache_entry = await session.execute(
                         select(AIExtractionCache).filter_by(email_uid=email_uid)
@@ -276,22 +314,38 @@ class AsyncDatabaseOperations:
                         session.add(cache_entry)
 
                     await session.commit()
-                    return  # 成功，退出重试
+                    logger.debug(f"Cache saved for {email_uid}")
 
-            except OperationalError as e:
-                if "database is locked" in str(e) and attempt < max_retries - 1:
-                    # 等待后重试
-                    wait_time = 0.1 * (2 ** attempt)  # 指数退避
-                    print(f"Database locked, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
-                    await asyncio.sleep(wait_time)
-                else:
-                    # 重试次数用完或其他错误
-                    print(f"Failed to save AI cache after {attempt + 1} attempts: {e}")
-                    # 缓存失败不应阻塞主流程
-                    return
             except Exception as e:
-                print(f"Failed to save AI cache: {e}")
-                return  # 缓存失败不应阻塞主流程
+                # 后台任务中的错误只记录，不影响主流程
+                logger.warning(f"Background cache save failed for {cache_data[0] if cache_data else 'unknown'}: {e}")
+
+        logger.info("Background cache writer stopped")
+
+    async def save_ai_cache(
+        self,
+        email_uid: str,
+        result: Dict,
+        is_fallback: bool = False
+    ):
+        """保存AI提取结果到缓存 - 非阻塞后台写入
+
+        将缓存写入放入后台队列，立即返回，不阻塞主流程
+        """
+        if not self._initialized:
+            # 如果还没有初始化，先初始化后台任务
+            await self.initialize()
+
+        try:
+            # 非阻塞地放入队列，如果队列满了就丢弃这次缓存
+            self._cache_write_queue.put_nowait((email_uid, result, is_fallback))
+        except asyncio.QueueFull:
+            # 队列列满了，直接丢弃，不阻塞
+            logger.debug("Cache write queue full, dropping cache save")
+        except Exception as e:
+            logger.warning(f"Failed to queue cache save: {e}")
+
+        # 立即返回，不等待保存完成
 
 
 # 全局实例

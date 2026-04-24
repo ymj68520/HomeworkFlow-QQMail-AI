@@ -353,8 +353,46 @@ class MainWindow(QMainWindow):
         """后台拉取邮件正文"""
         try:
             from mail.parser import mail_parser_target
+            from config.settings import settings
+            
             if mail_parser_target.connect():
-                email_data = mail_parser_target.parse_email(submission['email_uid'])
+                email_uid = submission.get('email_uid')
+                message_id = submission.get('message_id')
+                email_data = None
+                
+                # 策略 1: 在目标文件夹按 UID 查找
+                if email_uid:
+                    mail_parser_target.imap.select_folder(settings.TARGET_FOLDER)
+                    print(f"[FETCH] Strategy 1: Fetching UID {email_uid} in {settings.TARGET_FOLDER}")
+                    email_data = mail_parser_target.parse_email(email_uid)
+                
+                # 策略 2: 如果失败且有 Message-ID，在目标文件夹按 Message-ID 查找
+                if not email_data and message_id:
+                    print(f"[FETCH] Strategy 2: Trying Message-ID {message_id} in {settings.TARGET_FOLDER}")
+                    new_uid = mail_parser_target.imap.find_email_by_message_id(message_id, settings.TARGET_FOLDER)
+                    if new_uid:
+                        email_data = mail_parser_target.parse_email(new_uid)
+                        if email_data:
+                            print(f"[FETCH] Found and fixed UID: {email_uid} -> {new_uid}")
+                            # 修复数据库中的 UID
+                            if submission.get('id'):
+                                db.update_submission_field(submission['id'], 'email_uid', new_uid)
+                                submission['email_uid'] = new_uid
+
+                # 策略 3: 如果还是失败，在 INBOX 中查找 (可能邮件还没被移动)
+                if not email_data:
+                    print(f"[FETCH] Strategy 3: Searching in INBOX")
+                    mail_parser_target.imap.select_folder('INBOX')
+                    if email_uid:
+                        email_data = mail_parser_target.parse_email(email_uid)
+                    
+                    if not email_data and message_id:
+                        new_uid = mail_parser_target.imap.find_email_by_message_id(message_id, 'INBOX')
+                        if new_uid:
+                            email_data = mail_parser_target.parse_email(new_uid)
+                            if email_data:
+                                print(f"[FETCH] Found in INBOX, UID: {new_uid}")
+
                 if email_data and 'email_body' in email_data:
                     body_dict = email_data['email_body']
                     body = body_dict.get('plain_text') or body_dict.get('html_markdown') or "邮件内容为空"
@@ -370,6 +408,8 @@ class MainWindow(QMainWindow):
                     
                     # 发送信号回到主线程更新 UI
                     self.update_drawer_signal.emit(details, body)
+                else:
+                    self.update_drawer_signal.emit(details, "无法从服务器获取邮件正文 (UID/Message-ID 不匹配)")
 
                 mail_parser_target.disconnect()
         except Exception as e:

@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - 事务性文件操作支持 (TransactionalFileOperation)
 - AI提取结果缓存 (CacheManager)
 - 异步数据库操作支持 (AsyncDatabaseOperations)
+- 后台缓存写入器 - 非阻塞队列处理AI缓存写入
 - 新的数据库索引优化查询性能
 - 文件操作日志表 (file_operations_log)
 - 错误恢复管理器 (RecoveryManager)

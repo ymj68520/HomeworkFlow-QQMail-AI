@@ -1,9 +1,36 @@
 import json
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 from database.models import db_session, Student, Assignment, Submission, Attachment, EmailLog
 from sqlalchemy import or_, and_
 import sqlite3
+import functools
+import inspect
+from database.write_queue import write_queue
+
+
+def _queued_write(func):
+    """
+    装饰器：自动将写操作通过写队列执行
+
+    检测调用上下文，自动选择同步或异步执行
+    """
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        # 检查是否在异步上下文中
+        try:
+            import asyncio
+            asyncio.get_running_loop()
+            # 在异步上下文中，直接执行原始函数
+            # （因为异步操作已经通过 async_db 处理）
+            return func(self, *args, **kwargs)
+        except RuntimeError:
+            # 同步上下文，通过写队列执行
+            def _exec():
+                return func(self, *args, **kwargs)
+            return write_queue.submit_sync(_exec)
+
+    return wrapper
 
 class DatabaseOperations:
     @property
@@ -11,8 +38,27 @@ class DatabaseOperations:
         return db_session()
 
     def __init__(self):
-        pass
+        # 启动写队列
+        write_queue.start()
 
+    def _write(self, func: Callable, *args, **kwargs) -> Any:
+        """
+        通过写队列执行写操作
+
+        自动检测当前是否在异步上下文中：
+        - 异步上下文：返回可等待对象
+        - 同步上下文：同步等待结果
+        """
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+            # 在异步上下文中
+            return write_queue.submit_async(func, *args, **kwargs)
+        except RuntimeError:
+            # 同步上下文
+            return write_queue.submit_sync(func, *args, **kwargs)
+
+    @_queued_write
     def create_student(self, student_id: str, name: str, email: Optional[str] = None) -> Student:
         """Create or get existing student"""
         student = self.session.query(Student).filter_by(student_id=student_id).first()
@@ -27,6 +73,7 @@ class DatabaseOperations:
         """Get student by student_id"""
         return self.session.query(Student).filter_by(student_id=student_id).first()
 
+    @_queued_write
     def create_assignment(self, name: str, deadline: Optional[datetime] = None) -> Assignment:
         """Create or get existing assignment"""
         assignment = self.session.query(Assignment).filter_by(name=name).first()
@@ -41,6 +88,7 @@ class DatabaseOperations:
         """Get assignment by name"""
         return self.session.query(Assignment).filter_by(name=name).first()
 
+    @_queued_write
     def update_assignment_deadline(self, name: str, deadline: datetime) -> bool:
         """Update assignment deadline"""
         assignment = self.get_assignment(name)
@@ -50,6 +98,7 @@ class DatabaseOperations:
             return True
         return False
 
+    @_queued_write
     def create_submission(
         self,
         email_uid: str,
@@ -69,27 +118,47 @@ class DatabaseOperations:
     ) -> Optional[Submission]:
         """Create or update a submission with status tracking"""
         try:
-            # 1. 查找或创建学生 (如果提供了 student_id 且不是 Unknown)
+            # 1. 查找或创建学生 (不调用其他写方法，避免嵌套队列调用)
             student_db_id = None
-            if student_id and student_id != 'Unknown':
-                student = self.create_student(student_id, sender_name or "Unknown", sender_email)
-                student_db_id = student.id
-
-            # 2. 查找或创建作业 (如果提供了 assignment_name 且不是 Unknown)
-            assignment_db_id = None
             assignment_obj = None
-            if assignment_name and assignment_name != 'Unknown':
-                assignment_obj = self.create_assignment(assignment_name)
-                assignment_db_id = assignment_obj.id
+            assignment_db_id = None
 
-            # 3. 检查是否已存在记录 (优先通过 message_id, 其次通过 email_uid)
+            if student_id and student_id != 'Unknown':
+                student = self.session.query(Student).filter_by(student_id=student_id).first()
+                if not student:
+                    student = Student(student_id=student_id, name=sender_name or "Unknown", email=sender_email)
+                    self.session.add(student)
+                    self.session.flush()
+                    student_db_id = student.id
+                else:
+                    student_db_id = student.id
+                    # 更新学生信息
+                    if student.name != (sender_name or "Unknown"):
+                        student.name = sender_name or "Unknown"
+                    if sender_email and student.email != sender_email:
+                        student.email = sender_email
+
+            # 2. 查找或创建作业 (不调用其他写方法)
+            if assignment_name and assignment_name != 'Unknown':
+                assignment = self.session.query(Assignment).filter_by(name=assignment_name).first()
+                if not assignment:
+                    assignment = Assignment(name=assignment_name)
+                    self.session.add(assignment)
+                    self.session.flush()
+                    assignment_obj = assignment
+                    assignment_db_id = assignment.id
+                else:
+                    assignment_obj = assignment
+                    assignment_db_id = assignment.id
+
+            # 3. 检查是否已存在记录
             existing = None
             if message_id:
                 existing = self.session.query(Submission).filter_by(message_id=message_id).first()
-            
+
             if not existing:
                 existing = self.session.query(Submission).filter_by(email_uid=email_uid).first()
-            
+
             # 计算是否逾期
             is_late = False
             if assignment_obj and assignment_obj.deadline and submission_time > assignment_obj.deadline:
@@ -97,10 +166,10 @@ class DatabaseOperations:
 
             if existing:
                 # 更新现有记录
-                if student_db_id: existing.student_id = student_db_id
-                if assignment_db_id: existing.assignment_id = assignment_db_id
+                if student_db_id is not None: existing.student_id = student_db_id
+                if assignment_db_id is not None: existing.assignment_id = assignment_db_id
                 if message_id: existing.message_id = message_id
-                existing.email_uid = email_uid # UID 可能会变
+                existing.email_uid = email_uid
                 existing.email_subject = email_subject
                 existing.submission_time = submission_time
                 if local_path: existing.local_path = local_path
@@ -141,8 +210,11 @@ class DatabaseOperations:
         except Exception as e:
             self.session.rollback()
             print(f"Error creating submission: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
+    @_queued_write
     def update_submission_status(self, submission_id: int, status: str, error_message: Optional[str] = None) -> bool:
         """Update submission status and optional error message"""
         try:
@@ -169,6 +241,7 @@ class DatabaseOperations:
             print(f"Error updating submission status: {e}")
             return False
 
+    @_queued_write
     def update_submission_full(
         self,
         submission_id: Optional[int],
@@ -264,6 +337,7 @@ class DatabaseOperations:
         """Get submission by its database ID"""
         return self.session.query(Submission).filter_by(id=submission_id).first()
 
+    @_queued_write
     def update_submission_field(self, submission_id: Optional[int], field_id: str, new_value: Any, email_uid: Optional[str] = None, message_id: Optional[str] = None) -> bool:
         """Update a single field of a submission. No longer creates records automatically to prevent data corruption."""
         try:
@@ -311,6 +385,8 @@ class DatabaseOperations:
                     submission.is_replied = False
             elif field_id == 'message_id':
                 submission.message_id = new_value
+            elif field_id == 'email_uid':
+                submission.email_uid = new_value
             elif field_id == 'body':
                 submission.body = new_value
             
@@ -342,6 +418,7 @@ class DatabaseOperations:
                 'email': s.student.email if s.student else s.sender_email,
                 'assignment_name': s.assignment.name if s.assignment else "Unknown",
                 'email_uid': s.email_uid,
+                'message_id': s.message_id,
                 'submission_time': s.submission_time,
                 'is_late': s.is_late,
                 'is_downloaded': s.is_downloaded,
@@ -363,6 +440,7 @@ class DatabaseOperations:
             return None
         return self.session.query(Submission).filter_by(message_id=message_id).first()
 
+    @_queued_write
     def update_submission_local_path(self, submission_id: int, local_path: str) -> bool:
         """Update submission local path"""
         try:
@@ -378,6 +456,7 @@ class DatabaseOperations:
             print(f"Error updating local path: {e}")
             return False
 
+    @_queued_write
     def mark_replied(self, submission_id: int) -> bool:
         """Mark submission as replied"""
         try:
@@ -392,6 +471,7 @@ class DatabaseOperations:
             print(f"Error marking replied: {e}")
             return False
 
+    @_queued_write
     def mark_late_submissions(self, assignment_name: str) -> int:
         """Mark all submissions as late if past deadline"""
         try:
@@ -412,6 +492,7 @@ class DatabaseOperations:
             print(f"Error marking late submissions: {e}")
             return 0
 
+    @_queued_write
     def delete_submission(self, submission_id: int) -> bool:
         """Delete submission by ID"""
         try:
@@ -426,6 +507,7 @@ class DatabaseOperations:
             print(f"Error deleting submission: {e}")
             return False
 
+    @_queued_write
     def add_attachment(self, submission_id: int, filename: str, file_size: int, local_path: str) -> Optional[Attachment]:
         """Add attachment to submission"""
         try:
@@ -448,6 +530,7 @@ class DatabaseOperations:
         """Get all attachments for a submission"""
         return self.session.query(Attachment).filter_by(submission_id=submission_id).all()
 
+    @_queued_write
     def log_email_action(self, email_uid: str, action: str, folder: str, details: str = None, error_message: str = None):
         """Log email action"""
         try:
@@ -507,6 +590,7 @@ class DatabaseOperations:
                 'email': s.student.email if s.student else s.sender_email,
                 'assignment_name': s.assignment.name if s.assignment else "Unknown",
                 'email_uid': s.email_uid,
+                'message_id': s.message_id,
                 'submission_time': s.submission_time,
                 'is_late': s.is_late,
                 'is_downloaded': s.is_downloaded,
@@ -541,6 +625,7 @@ class DatabaseOperations:
             Submission.is_latest == True
         ).first()
 
+    @_queued_write
     def mark_old_versions_as_not_latest(
         self,
         student_id: str,
@@ -575,6 +660,7 @@ class DatabaseOperations:
         from config.settings import settings
         return sqlite3.connect(str(settings.DATABASE_PATH))
 
+    @_queued_write
     def save_email_body(self, submission_id: int, body_data: Dict) -> bool:
         """Save email body data to submission
 
@@ -680,6 +766,7 @@ class DatabaseOperations:
             'is_fallback': cache_entry.is_fallback
         }
 
+    @_queued_write
     def save_ai_cache(self, email_uid: str, result: Dict, is_fallback: bool = False):
         """Save AI extraction result to cache
 

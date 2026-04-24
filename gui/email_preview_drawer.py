@@ -1157,20 +1157,45 @@ class EmailPreviewDrawer(ctk.CTkFrame):
                         thread_result['error'] = "无法连接到邮件服务器"
                     return
 
-                # 选择目标文件夹（必需！）
-                target_folder = settings.TARGET_FOLDER
-                if not mail_parser_target.imap.select_folder(target_folder):
-                    with thread_lock:
-                        thread_result['error'] = f"无法选择文件夹: {target_folder}"
-                    return
+                message_id = data.get('message_id')
+                parsed_email = None
 
-                # 解析邮件
+                # 策略 1: 在目标文件夹按 UID 查找
+                target_folder = settings.TARGET_FOLDER
+                mail_parser_target.imap.select_folder(target_folder)
+                print(f"[PREVIEW] Strategy 1: Fetching UID {email_uid} in {target_folder}")
                 parsed_email = mail_parser_target.parse_email(email_uid)
+                
+                # 策略 2: 如果失败且有 Message-ID，在目标文件夹按 Message-ID 查找
+                if not parsed_email and message_id:
+                    print(f"[PREVIEW] Strategy 2: Trying Message-ID {message_id} in {target_folder}")
+                    new_uid = mail_parser_target.imap.find_email_by_message_id(message_id, target_folder)
+                    if new_uid:
+                        parsed_email = mail_parser_target.parse_email(new_uid)
+                        if parsed_email:
+                            print(f"[PREVIEW] Found and fixed UID: {email_uid} -> {new_uid}")
+                            # 修复数据库中的 UID
+                            db.update_submission_field(submission_id, 'email_uid', new_uid)
+
+                # 策略 3: 如果还是失败，在 INBOX 中查找
+                if not parsed_email:
+                    print(f"[PREVIEW] Strategy 3: Searching in INBOX")
+                    mail_parser_target.imap.select_folder('INBOX')
+                    if email_uid:
+                        parsed_email = mail_parser_target.parse_email(email_uid)
+                    
+                    if not parsed_email and message_id:
+                        new_uid = mail_parser_target.imap.find_email_by_message_id(message_id, 'INBOX')
+                        if new_uid:
+                            parsed_email = mail_parser_target.parse_email(new_uid)
+                            if parsed_email:
+                                print(f"[PREVIEW] Found in INBOX, UID: {new_uid}")
+
                 mail_parser_target.disconnect()
 
                 if not parsed_email:
                     with thread_lock:
-                        thread_result['error'] = "无法解析邮件"
+                        thread_result['error'] = "无法从服务器获取邮件正文 (UID/Message-ID 不匹配)"
                     return
 
                 # 提取邮件正文数据

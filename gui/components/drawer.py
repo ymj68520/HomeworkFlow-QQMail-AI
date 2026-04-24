@@ -151,10 +151,11 @@ class Drawer(QFrame):
         
         # 停止正在进行的动画
         if hasattr(self, "animation"):
-            self.animation.stop()
             try:
-                self.animation.finished.disconnect(self.hide)
-            except:
+                self.animation.stop()
+                # 仅断开 hide，或者直接断开所有 (更安全)
+                self.animation.finished.disconnect()
+            except (RuntimeError, TypeError):
                 pass
         
         self.show()
@@ -184,10 +185,11 @@ class Drawer(QFrame):
         
         # 停止正在进行的动画
         if hasattr(self, "animation"):
-            self.animation.stop()
             try:
-                self.animation.finished.disconnect(self.hide)
-            except:
+                self.animation.stop()
+                # 仅断开 hide，或者直接断开所有 (更安全)
+                self.animation.finished.disconnect()
+            except (RuntimeError, TypeError):
                 pass
         
         parent = self.parentWidget()

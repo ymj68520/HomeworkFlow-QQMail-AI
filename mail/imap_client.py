@@ -152,7 +152,8 @@ class IMAPClient:
                 if not self.select_folder():
                     return []
 
-            status, messages = self.connection.search(None, 'UNSEEN')
+            # 使用 UID SEARCH 确保返回的是持久化的 UID
+            status, messages = self.connection.uid('search', None, 'UNSEEN')
 
             if status != 'OK':
                 return []
@@ -165,7 +166,7 @@ class IMAPClient:
             return []
 
     def fetch_email(self, email_uid: str) -> Optional[Dict]:
-        """获取邮件完整内容"""
+        """获取邮件完整内容 (使用 UID)"""
         try:
             # 确保已经选择了文件夹
             if not self.current_folder:
@@ -173,7 +174,8 @@ class IMAPClient:
                     print(f"Error: No folder selected before fetching email {email_uid}")
                     return None
 
-            status, msg_data = self.connection.fetch(email_uid, '(RFC822)')
+            # 使用 UID FETCH 而不是普通 FETCH
+            status, msg_data = self.connection.uid('fetch', email_uid, '(RFC822)')
 
             if status != 'OK':
                 print(f"Error fetching email {email_uid}: IMAP status {status}")
@@ -186,6 +188,11 @@ class IMAPClient:
 
             # 尝试解析邮件内容，处理不同的响应格式
             try:
+                # 如果 msg_data 为 [None]，表示 UID 在当前文件夹中不存在
+                if not msg_data or msg_data == [None]:
+                    print(f"Error fetching email {email_uid}: UID not found in current folder '{self.current_folder}'")
+                    return None
+
                 # 标准格式: [(response, content), ...]
                 if isinstance(msg_data[0], tuple) and len(msg_data[0]) >= 2:
                     raw_email = msg_data[0][1]
@@ -208,7 +215,7 @@ class IMAPClient:
             # 提取邮件信息
             email_data = {
                 'uid': email_uid,
-                'message_id': self.decode_header(email_message['Message-ID']),
+                'message_id': self.decode_header(email_message['Message-ID']) if email_message['Message-ID'] else None,
                 'subject': self.decode_header(email_message['Subject']),
                 'from': self.decode_header(email_message['From']),
                 'to': self.decode_header(email_message['To']),
@@ -221,6 +228,42 @@ class IMAPClient:
 
         except Exception as e:
             print(f"Error fetching email {email_uid}: {e}")
+            return None
+
+    def find_email_by_message_id(self, message_id: str, folder_name: str = 'INBOX') -> Optional[str]:
+        """根据Message-ID查找邮件UID"""
+        try:
+            if not self.select_folder(folder_name):
+                print(f"[SEARCH] Failed to select folder {folder_name}")
+                return None
+
+            # 构造搜索命令，使用 UID SEARCH 确保返回的是持久化的 UID
+            # 尝试几种常见的搜索格式
+            search_queries = [
+                f'HEADER Message-ID "{message_id}"',
+                f'(HEADER Message-ID "{message_id}")'
+            ]
+            
+            # 如果包含尖括号，也尝试去掉尖括号的版本
+            if '<' in message_id and '>' in message_id:
+                clean_id = message_id.strip('<>')
+                search_queries.append(f'HEADER Message-ID "{clean_id}"')
+                search_queries.append(f'(HEADER Message-ID "{clean_id}")')
+
+            for query in search_queries:
+                status, messages = self.connection.uid('search', None, query)
+                if status == 'OK':
+                    email_ids = messages[0].split()
+                    if email_ids:
+                        uid = email_ids[0].decode()
+                        print(f"[SEARCH] Found UID {uid} using query: {query}")
+                        return uid
+
+            print(f"[SEARCH] No match found for Message-ID {message_id} in {folder_name}")
+            return None
+
+        except Exception as e:
+            print(f"Error finding email by Message-ID: {e}")
             return None
 
     def extract_attachments(self, email_message) -> List[Dict]:
@@ -249,14 +292,14 @@ class IMAPClient:
         return attachments
 
     def mark_as_read(self, email_uid: str) -> bool:
-        """标记邮件为已读"""
+        """标记邮件为已读 (使用 UID)"""
         try:
             # 确保已经选择了文件夹
             if not self.current_folder:
                 if not self.select_folder('INBOX'):
                     return False
 
-            self.connection.store(email_uid, '+FLAGS', '\\Seen')
+            self.connection.uid('store', email_uid, '+FLAGS', '\\Seen')
             return True
 
         except Exception as e:
@@ -264,7 +307,7 @@ class IMAPClient:
             return False
 
     def move_email(self, email_uid: str, target_folder: str) -> bool:
-        """移动邮件到目标文件夹（支持QQ邮箱前缀格式）"""
+        """移动邮件到目标文件夹 (使用 UID)"""
         try:
             # 确保已经选择了文件夹
             if not self.current_folder:
@@ -282,12 +325,11 @@ class IMAPClient:
                 # 提取QQ邮箱格式的实际路径
                 folder_path = self.extract_folder_path(actual_folder)
 
-            # QQ邮箱使用COPY + STORE组合来移动邮件
-            # 先复制到目标文件夹
-            self.connection.copy(email_uid, folder_path)
+            # 使用 UID COPY
+            self.connection.uid('copy', email_uid, folder_path)
 
-            # 然后标记为删除并删除（相当于移动）
-            self.connection.store(email_uid, '+FLAGS', '\\Deleted')
+            # 然后标记为删除并删除
+            self.connection.uid('store', email_uid, '+FLAGS', '\\Deleted')
             self.connection.expunge()
 
             print(f"[PASS] Email {email_uid} moved to '{folder_path}'")
@@ -298,14 +340,14 @@ class IMAPClient:
             return False
 
     def delete_email(self, email_uid: str) -> bool:
-        """删除邮件"""
+        """删除邮件 (使用 UID)"""
         try:
             # 确保已经选择了文件夹
             if not self.current_folder:
                 if not self.select_folder('INBOX'):
                     return False
 
-            self.connection.store(email_uid, '+FLAGS', '\\Deleted')
+            self.connection.uid('store', email_uid, '+FLAGS', '\\Deleted')
             self.connection.expunge()
             return True
 

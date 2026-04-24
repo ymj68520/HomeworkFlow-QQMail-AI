@@ -197,9 +197,15 @@ class TargetFolderLoader:
         # --- 策略 1: 强标识符匹配 ---
         if msg_id:
             db_record = db.get_submission_by_message_id(msg_id)
+            if db_record and db_record.email_uid != uid:
+                print(f"[FIX] Updating stale UID {db_record.email_uid} -> {uid} for record {db_record.id}")
+                db.update_submission_field(db_record.id, 'email_uid', uid)
             
         if not db_record:
             db_record = db.get_submission_by_uid(uid)
+            if db_record and msg_id and not db_record.message_id:
+                print(f"[FIX] Updating missing Message-ID for record {db_record.id}")
+                db.update_submission_field(db_record.id, 'message_id', msg_id)
 
         # --- 策略 2: 基于内容识别的自动修复 (针对移动后丢失关联的邮件) ---
         ai_info = None
@@ -262,10 +268,6 @@ class TargetFolderLoader:
 
         # 合并所有信息
         return {**email_info, **db_info, 'attachments': attachments}
-        attachments = self._get_local_attachments(db_info.get('local_path'))
-
-        # 合并所有信息
-        return {**email_info, **db_info, 'attachments': attachments}
 
     async def _extract_from_email(self, email_data) -> Dict:
         """从邮件中提取信息（使用AI，不再使用正则表达式）"""
@@ -273,14 +275,27 @@ class TargetFolderLoader:
 
         subject = email_data.get('subject', '')
         uid = email_data.get('uid', '')
+        attachments_info = []
 
         try:
+            # 如果没有附件信息，尝试获取（通过 UID FETCH BODYSTRUCTURE 或者完整解析）
+            # 由于当前已连接到 target_folder，我们可以直接获取
+            if uid:
+                # 尝试只解析头部和结构，不下载完整正文以提高性能
+                # 实际上 parser.parse_email 是获取完整内容的，这里权衡一下
+                full_email = self.parser.parse_email(uid)
+                if full_email and full_email.get('attachments'):
+                    attachments_info = [
+                        {'filename': a['filename'], 'size': a['size']} 
+                        for a in full_email['attachments']
+                    ]
+
             # 使用AI提取信息
             result = await ai_extractor.extract_with_cache({
                 'uid': uid,
                 'subject': subject,
                 'from': email_data.get('from', ''),
-                'attachments': []
+                'attachments': attachments_info
             })
 
             return {
@@ -296,7 +311,7 @@ class TargetFolderLoader:
                 'local_path': None,
             }
         except Exception as e:
-            print(f"AI extraction error: {e}")
+            print(f"AI extraction error for UID {uid}: {e}")
             # 返回Unknown而不是使用正则表达式
             return {
                 'id': None,
