@@ -231,6 +231,161 @@ class AssignmentWorkflow:
 
             return {'success': False, 'error': str(e), 'action': 'error'}
 
+    async def _process_extracted_info(
+        self,
+        email_uid: str,
+        email_data: Dict,
+        student_info: Dict,
+        is_retry: bool = False
+    ) -> dict:
+        """
+        Process email with already-extracted student info
+        This contains steps 5-13 from process_new_email to avoid code duplication
+
+        Args:
+            email_uid: Email UID
+            email_data: Parsed email data
+            student_info: Extracted student information
+            is_retry: Whether this is a retry from batch processing
+
+        Returns:
+            Processing result dictionary
+        """
+        print(f"\n{'='*50}")
+        if is_retry:
+            print(f"Re-processing email (from batch retry): {email_uid}")
+        else:
+            print(f"Processing extracted info: {email_uid}")
+        print(f"{'='*50}")
+
+        # 5. 判断是否为作业提交
+        if not student_info.get('is_assignment'):
+            print("Not an assignment submission, marking as read")
+            self.parser.mark_as_read(email_uid)
+            self.db.log_email_action(
+                email_uid=email_uid,
+                action='marked_read',
+                folder='INBOX',
+                details='Not an assignment'
+            )
+            return {'success': True, 'action': 'marked_read', 'reason': 'not_assignment'}
+
+        # 6. 验证必要信息
+        student_id = student_info.get('student_id')
+        student_name = student_info.get('name')
+        assignment_name = student_info.get('assignment_name')
+
+        if not all([student_id, student_name, assignment_name]):
+            print("Missing required information, marking as read")
+            self.parser.mark_as_read(email_uid)
+            self.db.log_email_action(
+                email_uid=email_uid,
+                action='marked_read',
+                folder='INBOX',
+                details=f'Missing info: student_id={student_id}, name={student_name}, assignment={assignment_name}'
+            )
+            return {'success': True, 'action': 'marked_read', 'reason': 'missing_info'}
+
+        # 7. 检查是否为重复提交
+        is_duplicate, dup_result = await self.dedup.check_and_handle_duplicate(
+            student_id=student_id,
+            student_name=student_name,
+            assignment_name=assignment_name,
+            email_uid=email_uid,
+            sender_email=email_data['sender_email'],
+            email_subject=email_data['subject'],
+            attachments=email_data['attachments']
+        )
+
+        if is_duplicate:
+            if dup_result.get('success'):
+                print(f"Duplicate submission updated: {student_id} - {assignment_name}")
+                return {'success': True, 'action': 'updated_duplicate', 'data': dup_result}
+            else:
+                print(f"Failed to handle duplicate: {dup_result.get('error')}")
+                return {'success': False, 'error': dup_result.get('error'), 'action': 'duplicate_failed'}
+
+        # 8. 保存附件到本地
+        print("Storing attachments locally...")
+        local_path = self.storage.store_submission(
+            assignment_name=assignment_name,
+            student_id=student_id,
+            name=student_name,
+            attachments=email_data['attachments']
+        )
+
+        print(f"Files stored at: {local_path}")
+
+        # 9. 存储到数据库
+        print("Saving to database...")
+        submission = self.db.create_submission(
+            student_id=student_id,
+            assignment_name=assignment_name,
+            email_uid=email_uid,
+            email_subject=email_data['subject'],
+            sender_email=email_data['sender_email'],
+            sender_name=student_name,
+            submission_time=datetime.now(),
+            local_path=local_path
+        )
+
+        if not submission:
+            return {'success': False, 'error': 'Failed to save to database', 'action': 'db_failed'}
+
+        # 10. 添加附件记录
+        for attachment in email_data['attachments']:
+            self.db.add_attachment(
+                submission_id=submission.id,
+                filename=attachment['filename'],
+                file_size=attachment['size'],
+                local_path=f"{local_path}/{attachment['filename']}"
+            )
+
+        # 11. 移动邮件到目标文件夹
+        print(f"Moving email to {self.settings.TARGET_FOLDER}...")
+        if not self.imap.folder_exists(self.settings.TARGET_FOLDER):
+            print(f"Creating target folder: {self.settings.TARGET_FOLDER}")
+            self.imap.create_folder(self.settings.TARGET_FOLDER)
+
+        move_success = self.parser.move_to_folder(email_uid, self.settings.TARGET_FOLDER)
+
+        if not move_success:
+            print(f"Warning: Failed to move email to {self.settings.TARGET_FOLDER}")
+
+        # 12. 发送确认邮件
+        print("Sending confirmation email...")
+        self.smtp.send_reply(
+            to_email=email_data['sender_email'],
+            student_name=student_name,
+            assignment_name=assignment_name
+        )
+
+        # 13. 标记已回复
+        self.db.mark_replied(submission.id)
+
+        # 14. 记录日志
+        log_action = 'reprocessed' if is_retry else 'processed'
+        self.db.log_email_action(
+            email_uid=email_uid,
+            action=log_action,
+            folder=self.settings.TARGET_FOLDER,
+            details=f"{log_action.capitalize()} assignment from {student_id} - {assignment_name}"
+        )
+
+        print(f"Successfully {log_action}: {student_id} - {student_name} - {assignment_name}")
+
+        return {
+            'success': True,
+            'action': log_action,
+            'data': {
+                'student_id': student_id,
+                'name': student_name,
+                'assignment': assignment_name,
+                'local_path': local_path,
+                'submission_id': submission.id
+            }
+        }
+
     async def process_inbox(self) -> dict:
         """处理收件箱中的所有未读邮件"""
         print("\n" + "="*50)
