@@ -131,13 +131,29 @@ db_session = scoped_session(SessionLocal)
 # Create async engine and session
 async_engine = create_async_engine(
     f'sqlite+aiosqlite:///{settings.DATABASE_PATH}',
-    connect_args={"check_same_thread": False}
+    connect_args={"check_same_thread": False},
+    pool_pre_ping=True,  # Verify connections before using
+    pool_recycle=3600,  # Recycle connections after 1 hour
+    echo=False
 )
 AsyncSessionLocal = async_sessionmaker(
     async_engine,
     class_=AsyncSession,
     expire_on_commit=False
 )
+
+# Enable WAL mode for better concurrency
+import asyncio
+from sqlalchemy import text
+
+async def enable_wal_mode():
+    """Enable Write-Ahead Logging for better concurrency"""
+    async with async_engine.begin() as conn:
+        await conn.execute(text("PRAGMA journal_mode=WAL"))
+        await conn.execute(text("PRAGMA synchronous=NORMAL"))
+        await conn.execute(text("PRAGMA cache_size=-10000"))  # 10MB cache
+        await conn.execute(text("PRAGMA busy_timeout=5000"))  # 5 second timeout
+        print("SQLite WAL mode enabled for better concurrency")
 
 def get_async_session():
     """Get async database session factory"""

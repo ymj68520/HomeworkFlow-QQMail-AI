@@ -241,40 +241,57 @@ class AsyncDatabaseOperations:
         self,
         email_uid: str,
         result: Dict,
-        is_fallback: bool = False
+        is_fallback: bool = False,
+        max_retries: int = 3
     ):
-        """保存AI提取结果到缓存"""
-        async with get_async_session()() as session:
-            cache_entry = await session.execute(
-                select(AIExtractionCache).filter_by(email_uid=email_uid)
-            )
-            cache_entry = cache_entry.scalar_one_or_none()
+        """保存AI提取结果到缓存（带重试机制）"""
+        import asyncio
+        from sqlalchemy.exc import OperationalError
 
-            if cache_entry:
-                # 更新
-                cache_entry.student_id = result.get('student_id')
-                cache_entry.name = result.get('name')
-                cache_entry.assignment_name = result.get('assignment_name')
-                cache_entry.confidence = result.get('confidence')
-                cache_entry.is_fallback = is_fallback
-            else:
-                # 创建
-                cache_entry = AIExtractionCache(
-                    email_uid=email_uid,
-                    student_id=result.get('student_id'),
-                    name=result.get('name'),
-                    assignment_name=result.get('assignment_name'),
-                    confidence=result.get('confidence'),
-                    is_fallback=is_fallback
-                )
-                session.add(cache_entry)
-
+        for attempt in range(max_retries):
             try:
-                await session.commit()
+                async with get_async_session()() as session:
+                    cache_entry = await session.execute(
+                        select(AIExtractionCache).filter_by(email_uid=email_uid)
+                    )
+                    cache_entry = cache_entry.scalar_one_or_none()
+
+                    if cache_entry:
+                        # 更新
+                        cache_entry.student_id = result.get('student_id')
+                        cache_entry.name = result.get('name')
+                        cache_entry.assignment_name = result.get('assignment_name')
+                        cache_entry.confidence = result.get('confidence')
+                        cache_entry.is_fallback = is_fallback
+                    else:
+                        # 创建
+                        cache_entry = AIExtractionCache(
+                            email_uid=email_uid,
+                            student_id=result.get('student_id'),
+                            name=result.get('name'),
+                            assignment_name=result.get('assignment_name'),
+                            confidence=result.get('confidence'),
+                            is_fallback=is_fallback
+                        )
+                        session.add(cache_entry)
+
+                    await session.commit()
+                    return  # 成功，退出重试
+
+            except OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    # 等待后重试
+                    wait_time = 0.1 * (2 ** attempt)  # 指数退避
+                    print(f"Database locked, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                    await asyncio.sleep(wait_time)
+                else:
+                    # 重试次数用完或其他错误
+                    print(f"Failed to save AI cache after {attempt + 1} attempts: {e}")
+                    # 缓存失败不应阻塞主流程
+                    return
             except Exception as e:
-                await session.rollback()
                 print(f"Failed to save AI cache: {e}")
-                raise
+                return  # 缓存失败不应阻塞主流程
 
 
 # 全局实例

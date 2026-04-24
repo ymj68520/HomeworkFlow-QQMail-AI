@@ -33,6 +33,19 @@ def main():
         print(f"✗ 配置错误: {e}")
         return
 
+    # 启用数据库WAL模式（异步）
+    try:
+        import asyncio
+        from database.models import enable_wal_mode
+
+        async def init_db():
+            await enable_wal_mode()
+
+        asyncio.run(init_db())
+        print("✓ 数据库WAL模式已启用")
+    except Exception as e:
+        print(f"⚠ 数据库初始化警告: {e}")
+
     # 启动GUI
     try:
         from PySide6.QtWidgets import QApplication
