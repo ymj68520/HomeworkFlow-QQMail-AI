@@ -1,10 +1,12 @@
 import json
 import re
 import asyncio
+import hashlib
 from openai import AsyncOpenAI
 from typing import Dict, List, Optional
 from config.settings import settings
 from ai.prompts import SYSTEM_PROMPT, get_user_prompt
+from database.async_operations import async_db
 
 class AIExtractor:
     def __init__(self):
@@ -29,7 +31,7 @@ class AIExtractor:
         attachments: List[Dict]
     ) -> Dict:
         """
-        使用AI提取学生信息
+        使用AI提取学生信息（带缓存）
 
         Args:
             subject: 邮件主题
@@ -46,6 +48,40 @@ class AIExtractor:
                 'reasoning': str
             }
         """
+        # 1. 构建缓存键
+        cache_key = self._build_cache_key(subject, sender, attachments)
+
+        # 2. 先检查缓存
+        cached = await async_db.get_ai_cache(cache_key)
+        if cached:
+            print(f"AI cache hit for {cache_key}")
+            return cached
+
+        # 3. 缓存未命中，调用AI
+        print(f"AI cache miss, calling API for {cache_key}")
+        result = await self._extract_from_ai(subject, sender, attachments)
+
+        # 4. 保存到缓存
+        await async_db.save_ai_cache(cache_key, result, is_fallback=False)
+
+        return result
+
+    def _build_cache_key(self, subject: str, sender: str, attachments: List[Dict]) -> str:
+        """构建缓存键"""
+        key_data = f"{subject}:{sender}"
+        if attachments:
+            # 使用第一个附件的文件名和大小作为缓存键的一部分
+            first_file = attachments[0]
+            key_data += f":{first_file.get('filename', '')}:{first_file.get('size', 0)}"
+        return hashlib.md5(key_data.encode()).hexdigest()
+
+    async def _extract_from_ai(
+        self,
+        subject: str,
+        sender: str,
+        attachments: List[Dict]
+    ) -> Dict:
+        """实际调用AI提取信息"""
         try:
             user_prompt = get_user_prompt(subject, sender, attachments)
 
@@ -107,7 +143,7 @@ class AIExtractor:
             print(f"AI extraction error: {e}, using fallback")
             return self.fallback_extract(subject, sender, attachments)
 
-    def fallback_extract(
+    async def fallback_extract(
         self,
         subject: str,
         sender: str,
@@ -186,47 +222,21 @@ class AIExtractor:
                 'confidence': float
             }
         """
-        from database.operations import db
-
         subject = email_data.get('subject', '')
         sender = email_data.get('from', '')
         attachments = email_data.get('attachments', [])
 
-        # Generate cache key from email UID
-        email_uid = email_data.get('uid')
-        if not email_uid:
-            # No UID, can't use cache
-            email_uid = f"no_uid_{hash(subject)}"
-
-        # Check cache first
-        if use_cache and email_uid.isdigit():
-            cached_result = db.get_ai_cache(email_uid)
-            if cached_result:
-                print(f"[Cache hit] {email_uid}")
-                return cached_result
-
-        print(f"[Cache miss] {email_uid}, calling AI")
-
-        # Call AI extraction
+        # Call main extraction method (now has built-in cache support)
         result = await self.extract_student_info(subject, sender, attachments)
 
-        # Extract relevant fields
-        cache_result = {
+        # Extract relevant fields for cache format
+        return {
             'student_id': result.get('student_id'),
             'name': result.get('name'),
             'assignment_name': result.get('assignment_name'),
             'is_fallback': 'fallback' in result.get('reasoning', '').lower(),
             'confidence': result.get('confidence', 0.5)
         }
-
-        # Save to cache if we have a valid UID
-        if use_cache and email_uid and email_uid.isdigit():
-            try:
-                db.save_ai_cache(email_uid, cache_result, cache_result['is_fallback'])
-            except Exception as e:
-                print(f"Warning: Failed to save to cache: {e}")
-
-        return cache_result
 
     async def batch_extract(
         self,
