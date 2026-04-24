@@ -410,7 +410,18 @@ class AssignmentWorkflow:
         try:
             # Call batch retry
             print("Calling batch AI extraction...")
+            import time
+            batch_start_time = time.time()
+
             retry_results = await self.ai.batch_retry_unknown(self.pending_retry)
+
+            batch_duration = time.time() - batch_start_time
+
+            # Log performance metrics
+            print(f"\nBatch retry performance:")
+            print(f"  Emails processed: {len(self.pending_retry)}")
+            print(f"  Duration: {batch_duration:.2f} seconds")
+            print(f"  Average time per email: {batch_duration/len(self.pending_retry):.2f} seconds")
 
             # Process each result
             for i, (email_info, new_result) in enumerate(zip(self.pending_retry, retry_results)):
@@ -462,6 +473,14 @@ class AssignmentWorkflow:
                     print(f"  name={new_result.get('name')}")
                     print(f"  assignment={new_result.get('assignment_name')}")
                     results['retry_failed'] += 1
+
+            # Calculate improvement rate
+            improvement_rate = (results['retry_success'] / results['total'] * 100) if results['total'] > 0 else 0
+            print(f"\nBatch retry metrics:")
+            print(f"  Improvement rate: {improvement_rate:.1f}%")
+            print(f"  Total processed: {results['total']}")
+            print(f"  Successfully fixed: {results['retry_success']}")
+            print(f"  Still failed: {results['retry_failed']}")
 
             print(f"\n{'='*50}")
             print(f"Batch retry complete:")
