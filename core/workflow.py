@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime
 from typing import Optional, Dict
-from mail.parser import mail_parser_inbox as mail_parser
+from mail.parser import mail_parser_inbox as mail_parser, mail_parser_target
 from ai.extractor import ai_extractor
 from database.operations import db
 from storage.manager import storage_manager
@@ -9,7 +9,7 @@ from mail.imap_client import imap_client_inbox
 from mail.smtp_client import smtp_client
 from core.deduplication import deduplication_handler
 from config.settings import settings
-from database.models import SubmissionStatus
+from database.models import SubmissionStatus, Submission
 
 class AssignmentWorkflow:
     """作业处理主流程"""
@@ -54,6 +54,7 @@ class AssignmentWorkflow:
                 # 记录为忽略
                 self.db.create_submission(
                     email_uid=email_uid,
+                    message_id=email_data.get('message_id'),
                     email_subject=email_data['subject'],
                     sender_email=email_data['sender_email'],
                     sender_name=email_data['sender_name'],
@@ -108,6 +109,7 @@ class AssignmentWorkflow:
                 # 记录为忽略
                 self.db.create_submission(
                     email_uid=email_uid,
+                    message_id=email_data.get('message_id'),
                     email_subject=email_data['subject'],
                     sender_email=email_data['sender_email'],
                     sender_name=email_data['sender_name'],
@@ -301,6 +303,52 @@ class AssignmentWorkflow:
                 'submission_id': submission.id
             }
         }
+
+    def delete_submission(self, submission_id: int) -> bool:
+        """
+        处理删除逻辑：
+        1. 从数据库获取记录
+        2. 将邮件从TARGET_FOLDER移动回INBOX
+        3. 删除本地文件
+        4. 删除数据库记录
+        """
+        # 1. Fetch submission
+        submission = self.db.session.query(Submission).filter_by(id=submission_id).first()
+        if not submission:
+            print(f"Submission {submission_id} not found in DB.")
+            return False
+            
+        email_uid = submission.email_uid
+        local_path = submission.local_path
+        
+        # 2. Move email back to INBOX
+        if self.settings.TARGET_FOLDER:
+            # 确保连接
+            if not mail_parser_target.imap.connection:
+                mail_parser_target.connect()
+                
+            # 选择 TARGET_FOLDER
+            if mail_parser_target.imap.select_folder(self.settings.TARGET_FOLDER):
+                # 移动回 INBOX
+                success = mail_parser_target.imap.move_email(email_uid, 'INBOX')
+                if not success:
+                    print(f"Warning: Failed to move email {email_uid} back to INBOX")
+                else:
+                    self.db.log_email_action(
+                        email_uid=email_uid,
+                        action='moved_to_inbox',
+                        folder=self.settings.TARGET_FOLDER,
+                        details="Moved back to INBOX during deletion"
+                    )
+            else:
+                print(f"Warning: Could not select folder {self.settings.TARGET_FOLDER}")
+        
+        # 3. Delete local files
+        if local_path:
+            self.storage.delete_files(local_path)
+            
+        # 4. Delete DB record
+        return self.db.delete_submission(submission_id)
 
     async def process_pending_retry(self) -> dict:
         """
