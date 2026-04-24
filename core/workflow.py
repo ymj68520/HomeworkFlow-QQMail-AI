@@ -22,6 +22,7 @@ class AssignmentWorkflow:
         self.smtp = smtp_client
         self.dedup = deduplication_handler
         self.settings = settings
+        self.pending_retry = []  # Track emails needing batch retry
 
     async def process_new_email(self, email_uid: str) -> dict:
         """
