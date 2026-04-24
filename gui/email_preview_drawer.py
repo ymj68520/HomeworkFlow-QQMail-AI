@@ -932,12 +932,25 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         def load_in_background():
             """在后台线程中执行IMAP操作"""
             try:
-                # 导入邮件解析器
+                # 导入邮件解析器和配置
                 from mail.parser import mail_parser_target
                 from database.operations import db
+                from config.settings import settings
 
-                # 连接并解析邮件
-                mail_parser_target.connect()
+                # 连接到邮件服务器
+                if not mail_parser_target.connect():
+                    with thread_lock:
+                        thread_result['error'] = "无法连接到邮件服务器"
+                    return
+
+                # 选择目标文件夹（必需！）
+                target_folder = settings.TARGET_FOLDER
+                if not mail_parser_target.imap.select_folder(target_folder):
+                    with thread_lock:
+                        thread_result['error'] = f"无法选择文件夹: {target_folder}"
+                    return
+
+                # 解析邮件
                 parsed_email = mail_parser_target.parse_email(email_uid)
                 mail_parser_target.disconnect()
 
