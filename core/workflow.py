@@ -71,6 +71,25 @@ class AssignmentWorkflow:
             print(f"  name={student_info.get('name')}")
             print(f"  assignment={student_info.get('assignment_name')}")
 
+            # NEW: Check for Unknown fields and add to pending retry
+            has_unknown = (
+                not student_info.get('student_id') or
+                not student_info.get('name') or
+                not student_info.get('assignment_name')
+            )
+
+            if has_unknown and student_info.get('is_assignment'):
+                # Add to pending batch retry
+                self.pending_retry.append({
+                    'uid': email_uid,
+                    'subject': email_data['subject'],
+                    'from': email_data['from'],
+                    'attachments': email_data['attachments'],
+                    'previous_result': student_info,
+                    'email_data': email_data
+                })
+                print(f"Added to batch retry list (Unknown fields detected)")
+
             # 4. 判断是否为作业提交
             if not student_info.get('is_assignment'):
                 print("Not an assignment submission, marking as read")
