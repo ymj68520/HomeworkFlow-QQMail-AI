@@ -116,6 +116,9 @@ class MainWindow(QMainWindow):
         # 表格双击
         self.table.rowDoubleClicked.connect(self.on_row_double_clicked)
         
+        # 表格选择变更
+        self.table.itemSelectionChanged.connect(self.update_status_info)
+        
         # 跨线程 UI 更新信号连接
         self.update_drawer_signal.connect(self.drawer.set_details)
         
@@ -147,11 +150,23 @@ class MainWindow(QMainWindow):
             self.refresh_table()
             self.update_stats()
             
-            self.statusBar().showMessage(f"已加载 {len(self.all_submissions)} 条记录 (总计 {self.total_count})")
+            self.update_status_info()
 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"加载数据失败: {str(e)}")
             self.statusBar().showMessage("加载失败")
+
+    def update_status_info(self):
+        """统一更新状态栏信息，显示加载数和选中数"""
+        loaded_count = len(self.filtered_submissions)
+        total_count = getattr(self, 'total_count', 0)
+        selected_count = len(self.table.selectionModel().selectedRows())
+        
+        msg = f"已加载 {loaded_count} 条记录 (总计 {total_count})"
+        if selected_count > 0:
+            msg += f" | 已选择 {selected_count} 条记录"
+        
+        self.statusBar().showMessage(msg)
 
     def update_dropdowns(self):
         """更新下拉菜单选项"""
@@ -254,6 +269,8 @@ class MainWindow(QMainWindow):
                 if query in str(sub['student_id']) or query in str(sub['name'])
             ]
             self.refresh_table()
+        
+        self.update_status_info()
 
     def on_filter_change(self):
         """筛选逻辑"""
@@ -303,6 +320,7 @@ class MainWindow(QMainWindow):
                 ]
 
         self.refresh_table()
+        self.update_status_info()
 
     def on_row_double_clicked(self, row_data):
         """处理行双击：展示抽屉"""
