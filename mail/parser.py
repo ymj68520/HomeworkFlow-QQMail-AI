@@ -86,6 +86,23 @@ class MailParser:
         """删除邮件"""
         return self.imap.delete_email(email_uid)
 
+    def uid_exists(self, uid: str) -> bool:
+        """
+        Check if an email UID still exists in the current folder
+
+        Args:
+            uid: Email UID to check
+
+        Returns:
+            True if UID exists, False otherwise
+        """
+        try:
+            # Try to fetch the email to see if it exists
+            result = self.imap.uid('FETCH', uid, '(UID)')
+            return bool(result)
+        except Exception:
+            return False
+
 # 创建两个专用解析器实例
 mail_parser_inbox = MailParser(imap_client_inbox)
 mail_parser_target = MailParser(imap_client_target)

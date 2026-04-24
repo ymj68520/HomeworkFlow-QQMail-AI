@@ -386,6 +386,101 @@ class AssignmentWorkflow:
             }
         }
 
+    async def process_pending_retry(self) -> dict:
+        """
+        Process emails with Unknown extraction results using batch retry
+
+        Returns:
+            Results summary with counts of successful retries
+        """
+        if not self.pending_retry:
+            print("No emails pending batch retry")
+            return {'total': 0, 'retry_success': 0, 'retry_failed': 0}
+
+        print(f"\n{'='*50}")
+        print(f"Batch Retry Phase: {len(self.pending_retry)} emails")
+        print(f"{'='*50}")
+
+        results = {
+            'total': len(self.pending_retry),
+            'retry_success': 0,
+            'retry_failed': 0
+        }
+
+        try:
+            # Call batch retry
+            print("Calling batch AI extraction...")
+            retry_results = await self.ai.batch_retry_unknown(self.pending_retry)
+
+            # Process each result
+            for i, (email_info, new_result) in enumerate(zip(self.pending_retry, retry_results)):
+                email_uid = email_info['uid']
+
+                # Check if extraction improved
+                if (new_result.get('student_id') and
+                    new_result.get('name') and
+                    new_result.get('assignment_name')):
+
+                    print(f"\n✓ Batch retry succeeded for {email_uid}")
+                    print(f"  student_id={new_result['student_id']}")
+                    print(f"  name={new_result['name']}")
+                    print(f"  assignment={new_result['assignment_name']}")
+                    print(f"  confidence={new_result.get('confidence', 0):.2f}")
+
+                    # Re-process through workflow using helper
+                    email_data = email_info['email_data']
+
+                    # Verify email hasn't been moved yet
+                    try:
+                        # Check if email still exists in INBOX
+                        if self.parser.uid_exists(email_uid):
+                            result = await self._process_extracted_info(
+                                email_uid=email_uid,
+                                email_data=email_data,
+                                student_info=new_result,
+                                is_retry=True
+                            )
+
+                            if result['success'] and result['action'] in ['processed', 'reprocessed']:
+                                results['retry_success'] += 1
+                            else:
+                                print(f"Warning: Re-processing failed for {email_uid}: {result.get('error')}")
+                                results['retry_failed'] += 1
+                        else:
+                            print(f"Info: Email {email_uid} no longer in INBOX, skipping re-processing")
+                            results['retry_failed'] += 1
+
+                    except Exception as e:
+                        print(f"Error re-processing {email_uid}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        results['retry_failed'] += 1
+
+                else:
+                    print(f"\n✗ Batch retry still failed for {email_uid}")
+                    print(f"  student_id={new_result.get('student_id')}")
+                    print(f"  name={new_result.get('name')}")
+                    print(f"  assignment={new_result.get('assignment_name')}")
+                    results['retry_failed'] += 1
+
+            print(f"\n{'='*50}")
+            print(f"Batch retry complete:")
+            print(f"  Total: {results['total']}")
+            print(f"  Succeeded: {results['retry_success']}")
+            print(f"  Still failed: {results['retry_failed']}")
+            print(f"{'='*50}\n")
+
+        except Exception as e:
+            print(f"Error in batch retry phase: {e}")
+            import traceback
+            traceback.print_exc()
+
+        finally:
+            # Clear pending list
+            self.pending_retry = []
+
+        return results
+
     async def process_inbox(self) -> dict:
         """处理收件箱中的所有未读邮件"""
         print("\n" + "="*50)
@@ -423,6 +518,9 @@ class AssignmentWorkflow:
                         results['processed'] += 1
                 else:
                     results['errors'] += 1
+
+            # Process emails with Unknown results using batch retry
+            await self.process_pending_retry()
 
             print("\n" + "="*50)
             print(f"Processing complete:")
