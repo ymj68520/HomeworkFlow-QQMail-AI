@@ -105,6 +105,21 @@ class AIExtractionCache(Base):
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
+class FileOperationsLog(Base):
+    """文件操作事务日志 - 用于实现强一致性"""
+    __tablename__ = 'file_operations_log'
+
+    id = Column(Integer, primary_key=True)
+    submission_id = Column(Integer, ForeignKey('submissions.id'), nullable=False)
+    operation_type = Column(String(50), nullable=False)
+    file_path = Column(String, nullable=False)
+    status = Column(String(20), nullable=False, default='pending')
+    created_at = Column(DateTime, default=datetime.now)
+    completed_at = Column(DateTime)
+    error_message = Column(String)
+
+    submission = relationship('Submission', backref='file_operations')
+
 # Create engine and session (sync)
 engine = create_engine(
     f'sqlite:///{settings.DATABASE_PATH}',
