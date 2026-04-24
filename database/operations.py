@@ -67,6 +67,16 @@ class DatabaseOperations:
             # Get or create assignment
             assignment = self.create_assignment(assignment_name)
 
+            # Check if this email was already processed (by email_uid)
+            existing_by_uid = self.session.query(Submission).filter_by(
+                email_uid=email_uid
+            ).first()
+
+            if existing_by_uid:
+                # Email already processed, skip it
+                print(f"Email {email_uid} already processed (submission {existing_by_uid.id}), skipping...")
+                return existing_by_uid
+
             # Check if submission already exists
             existing = self.session.query(Submission).filter_by(
                 student_id=student.id,
