@@ -183,13 +183,21 @@ class IMAPClient:
                 print(f"Error fetching email {email_uid}: No data returned from IMAP")
                 return None
 
-            # 检查第一个元素是否存在且包含内容
-            if not msg_data[0] or len(msg_data[0]) < 2:
-                print(f"Error fetching email {email_uid}: Invalid IMAP response structure")
+            # 尝试解析邮件内容，处理不同的响应格式
+            try:
+                # 标准格式: [(response, content), ...]
+                if isinstance(msg_data[0], tuple) and len(msg_data[0]) >= 2:
+                    raw_email = msg_data[0][1]
+                # 备选格式: 可能只有response没有content
+                elif len(msg_data) >= 2 and isinstance(msg_data[1], bytes):
+                    raw_email = msg_data[1]
+                else:
+                    print(f"Error fetching email {email_uid}: Unexpected IMAP response format, msg_data={msg_data}")
+                    return None
+            except (IndexError, TypeError) as e:
+                print(f"Error fetching email {email_uid}: Cannot parse IMAP response - {e}")
                 return None
 
-            # 解析邮件
-            raw_email = msg_data[0][1]
             if not raw_email:
                 print(f"Error fetching email {email_uid}: Email content is empty")
                 return None
