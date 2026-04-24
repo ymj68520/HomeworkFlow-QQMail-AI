@@ -73,8 +73,10 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         self.max_width = 800    # 最大宽度(像素)
         self.is_pinned = False  # 是否固定显示(不自动隐藏)
         self.is_visible = False # 当前是否可见
+        self.is_edit_mode = False # 是否处于编辑模式
         self.current_data = None  # 当前显示的提交数据
         self.current_submission_data = None  # 当前显示的提交数据（用于刷新）
+        self.edit_widgets = {}   # 存储编辑模式下的控件引用
 
         # Animation state
         self._animation_id = None
@@ -154,76 +156,210 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         # 清空现有内容
         for widget in self.card_student.content_frame.winfo_children():
             widget.destroy()
+        
+        # 重置当前卡片的编辑控件
+        self.edit_widgets['student_id'] = None
+        self.edit_widgets['name'] = None
+        self.edit_widgets['email'] = None
+        self.edit_widgets['status'] = None
 
-        # 学号（大号字体）
-        student_id_label = ctk.CTkLabel(
-            self.card_student.content_frame,
-            text=f"学号: {data.get('student_id', '未设置')}",
-            font=("Arial", self.FONT_SIZE_LARGE, "bold")
-        )
-        student_id_label.pack(anchor="w", pady=(0, self.PADDING_SECTION))
+        if self.is_edit_mode:
+            # --- 编辑模式 ---
+            # 学号
+            student_id = data.get('student_id', '')
+            ctk.CTkLabel(self.card_student.content_frame, text="学号:", font=("Arial", self.FONT_SIZE_SMALL)).pack(anchor="w")
+            id_entry = ctk.CTkEntry(self.card_student.content_frame, font=("Arial", self.FONT_SIZE_NORMAL))
+            id_entry.insert(0, student_id)
+            id_entry.pack(fill="x", pady=(0, self.PADDING_SECTION))
+            self.edit_widgets['student_id'] = id_entry
 
-        # 姓名
-        name_label = ctk.CTkLabel(
-            self.card_student.content_frame,
-            text=f"姓名: {data.get('name', '未设置')}",
-            font=("Arial", self.FONT_SIZE_NORMAL)
-        )
-        name_label.pack(anchor="w", pady=(0, self.PADDING_SECTION))
+            # 姓名
+            name = data.get('name', '')
+            ctk.CTkLabel(self.card_student.content_frame, text="姓名:", font=("Arial", self.FONT_SIZE_SMALL)).pack(anchor="w")
+            name_entry = ctk.CTkEntry(self.card_student.content_frame, font=("Arial", self.FONT_SIZE_NORMAL))
+            name_entry.insert(0, name)
+            name_entry.pack(fill="x", pady=(0, self.PADDING_SECTION))
+            self.edit_widgets['name'] = name_entry
 
-        # 邮箱
-        email = data.get('email', '未设置')
-        email_label = ctk.CTkLabel(
-            self.card_student.content_frame,
-            text=f"邮箱: {email if email else '未设置'}",
-            font=("Arial", self.FONT_SIZE_SMALL)
-        )
-        email_label.pack(anchor="w", pady=(0, self.PADDING_CARD))
+            # 邮箱
+            email = data.get('email', '') or data.get('email_from', '')
+            ctk.CTkLabel(self.card_student.content_frame, text="邮箱:", font=("Arial", self.FONT_SIZE_SMALL)).pack(anchor="w")
+            email_entry = ctk.CTkEntry(self.card_student.content_frame, font=("Arial", self.FONT_SIZE_NORMAL))
+            email_entry.insert(0, email)
+            email_entry.pack(fill="x", pady=(0, self.PADDING_SECTION))
+            self.edit_widgets['email'] = email_entry
 
-        # 状态标签容器
-        status_frame = ctk.CTkFrame(self.card_student.content_frame, fg_color="transparent")
-        status_frame.pack(fill="x", pady=(self.PADDING_SECTION, 0))
+            # 状态
+            status_code = data.get('status', 'pending')
+            ctk.CTkLabel(self.card_student.content_frame, text="状态:", font=("Arial", self.FONT_SIZE_SMALL)).pack(anchor="w")
+            
+            # 获取映射
+            status_map = getattr(self.master, 'STATUS_MAP', {'pending': '未处理'})
+            # 反向映射用于获取显示文本
+            status_options = list(status_map.values())
+            current_status_text = status_map.get(status_code, status_code)
+            
+            status_menu = ctk.CTkOptionMenu(
+                self.card_student.content_frame,
+                values=status_options,
+                font=("Arial", self.FONT_SIZE_NORMAL)
+            )
+            status_menu.set(current_status_text)
+            status_menu.pack(fill="x", pady=(0, self.PADDING_SECTION))
+            self.edit_widgets['status'] = status_menu
+            
+        else:
+            # --- 浏览模式 (原代码逻辑) ---
+            # 学号（大号字体）
+            student_id = data.get('student_id') or "未知 (提取失败)"
+            student_id_label = ctk.CTkLabel(
+                self.card_student.content_frame,
+                text=f"学号: {student_id}",
+                font=("Arial", self.FONT_SIZE_LARGE, "bold")
+            )
+            student_id_label.pack(anchor="w", pady=(0, self.PADDING_SECTION))
 
-        # 逾期/正常标签
-        is_late = data.get('is_late', False)
-        status_text = "逾期" if is_late else "正常"
-        status_color = self.COLOR_LATE if is_late else self.COLOR_NORMAL
-        status_label = ctk.CTkLabel(
-            status_frame,
-            text=status_text,
-            fg_color=status_color,
-            text_color="white",
-            corner_radius=4,
-            padx=self.PADDING_BADGE,
-            pady=self.PADDING_BADGE
-        )
-        status_label.pack(side="left", padx=(0, self.PADDING_SECTION))
+            # 姓名
+            name = data.get('name') or "未知"
+            name_label = ctk.CTkLabel(
+                self.card_student.content_frame,
+                text=f"姓名: {name}",
+                font=("Arial", self.FONT_SIZE_NORMAL)
+            )
+            name_label.pack(anchor="w", pady=(0, self.PADDING_SECTION))
 
-        # 已下载标签
-        if data.get('is_downloaded', False):
-            downloaded_label = ctk.CTkLabel(
+            # 邮箱
+            email = data.get('email', '未设置')
+            email_label = ctk.CTkLabel(
+                self.card_student.content_frame,
+                text=f"邮箱: {email if email else '未设置'}",
+                font=("Arial", self.FONT_SIZE_SMALL)
+            )
+            email_label.pack(anchor="w", pady=(0, self.PADDING_CARD))
+
+            # 异常信息 (如果有)
+            error_msg = data.get('error_message')
+            if error_msg:
+                error_label = ctk.CTkLabel(
+                    self.card_student.content_frame,
+                    text=f"⚠ 异常: {error_msg}",
+                    font=("Arial", self.FONT_SIZE_SMALL),
+                    text_color="#FF4500",
+                    wraplength=350,
+                    justify="left"
+                )
+                error_label.pack(anchor="w", pady=(0, self.PADDING_SECTION))
+
+            # 状态标签容器
+            status_frame = ctk.CTkFrame(self.card_student.content_frame, fg_color="transparent")
+            status_frame.pack(fill="x", pady=(self.PADDING_SECTION, 0))
+
+            # 核心状态标签
+            status_code = data.get('status', 'pending')
+            # 从父窗口获取映射（如果存在）
+            status_text = "未知"
+            status_color = "#808080"
+            if hasattr(self.master, 'STATUS_MAP'):
+                status_text = self.master.STATUS_MAP.get(status_code, status_code)
+                status_color = self.master.STATUS_COLORS.get(status_code, status_color)
+            
+            status_badge = ctk.CTkLabel(
                 status_frame,
-                text="已下载 ✓",
-                fg_color=self.COLOR_DOWNLOADED,
+                text=status_text,
+                fg_color=status_color,
                 text_color="white",
                 corner_radius=4,
                 padx=self.PADDING_BADGE,
                 pady=self.PADDING_BADGE
             )
-            downloaded_label.pack(side="left", padx=(0, self.PADDING_SECTION))
+            status_badge.pack(side="left", padx=(0, self.PADDING_SECTION))
 
-        # 已回复标签
-        if data.get('is_replied', False):
-            replied_label = ctk.CTkLabel(
-                status_frame,
-                text="已回复 ✓",
-                fg_color=self.COLOR_REPLIED,
-                text_color="white",
-                corner_radius=4,
-                padx=self.PADDING_BADGE,
-                pady=self.PADDING_BADGE
+            # 逾期标签
+            if data.get('is_late', False):
+                late_label = ctk.CTkLabel(
+                    status_frame,
+                    text="逾期",
+                    fg_color=self.COLOR_LATE,
+                    text_color="white",
+                    corner_radius=4,
+                    padx=self.PADDING_BADGE,
+                    pady=self.PADDING_BADGE
+                )
+                late_label.pack(side="left", padx=(0, self.PADDING_SECTION))
+
+    def _update_assignment_card(self, data: StudentData) -> None:
+        """更新作业信息卡片
+
+        Args:
+            data: 包含作业信息的字典
+        """
+        # 清空现有内容
+        for widget in self.card_assignment.content_frame.winfo_children():
+            widget.destroy()
+
+        self.edit_widgets['assignment_name'] = None
+
+        if self.is_edit_mode:
+            # --- 编辑模式 ---
+            from database.operations import db
+            assignments = db.get_all_assignments()
+            assignment_names = [a.name for a in assignments]
+            current_name = data.get('assignment_name', '未设置')
+            
+            ctk.CTkLabel(self.card_assignment.content_frame, text="作业名称:", font=("Arial", self.FONT_SIZE_SMALL)).pack(anchor="w")
+            
+            assignment_menu = ctk.CTkOptionMenu(
+                self.card_assignment.content_frame,
+                values=assignment_names if assignment_names else [current_name],
+                font=("Arial", self.FONT_SIZE_NORMAL)
             )
-            replied_label.pack(side="left")
+            assignment_menu.set(current_name)
+            assignment_menu.pack(fill="x", pady=(0, self.PADDING_SECTION))
+            self.edit_widgets['assignment_name'] = assignment_menu
+        else:
+            # --- 浏览模式 ---
+            # 作业名称
+            assignment_name = data.get('assignment_name', '未设置')
+            name_label = ctk.CTkLabel(
+                self.card_assignment.content_frame,
+                text=f"作业名称: {assignment_name}",
+                font=("Arial", self.FONT_SIZE_TITLE, "bold")
+            )
+            name_label.pack(anchor="w", pady=(0, self.PADDING_CARD))
+
+            # 本地存储路径
+            local_path = data.get('local_path')
+            if local_path:
+                # 可点击的路径标签
+                path_button = ctk.CTkButton(
+                    self.card_assignment.content_frame,
+                    text=f"📁 {local_path}",
+                    command=lambda: self._copy_path_to_clipboard(local_path),
+                    anchor="w",
+                    fg_color="#E9ECEF",
+                    text_color="black",
+                    hover_color="#DEE2E6"
+                )
+                path_button.pack(fill="x", pady=(0, self.PADDING_SECTION))
+            else:
+                no_path_label = ctk.CTkLabel(
+                    self.card_assignment.content_frame,
+                    text="本地路径: 未下载",
+                    font=("Arial", self.FONT_SIZE_NORMAL),
+                    text_color="gray"
+                )
+                no_path_label.pack(anchor="w", pady=(0, self.PADDING_SECTION))
+
+            # 数据库记录ID
+            record_id = data.get('id')
+            if record_id:
+                id_label = ctk.CTkLabel(
+                    self.card_assignment.content_frame,
+                    text=f"数据库ID: {record_id}",
+                    font=("Arial", 10),
+                    text_color="gray"
+                )
+                id_label.pack(anchor="w")
 
     def _update_email_card(self, data: StudentData) -> None:
         """更新邮件信息卡片
@@ -300,59 +436,6 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             text_color="gray"
         )
         uid_label.pack(anchor="w")
-
-    def _update_assignment_card(self, data: StudentData) -> None:
-        """更新作业信息卡片
-
-        Args:
-            data: 包含作业信息的字典
-        """
-        # 清空现有内容
-        for widget in self.card_assignment.content_frame.winfo_children():
-            widget.destroy()
-
-        # 作业名称
-        assignment_name = data.get('assignment_name', '未设置')
-        name_label = ctk.CTkLabel(
-            self.card_assignment.content_frame,
-            text=f"作业名称: {assignment_name}",
-            font=("Arial", self.FONT_SIZE_TITLE, "bold")
-        )
-        name_label.pack(anchor="w", pady=(0, self.PADDING_CARD))
-
-        # 本地存储路径
-        local_path = data.get('local_path')
-        if local_path:
-            # 可点击的路径标签
-            path_button = ctk.CTkButton(
-                self.card_assignment.content_frame,
-                text=f"📁 {local_path}",
-                command=lambda: self._copy_path_to_clipboard(local_path),
-                anchor="w",
-                fg_color="#E9ECEF",
-                text_color="black",
-                hover_color="#DEE2E6"
-            )
-            path_button.pack(fill="x", pady=(0, self.PADDING_SECTION))
-        else:
-            no_path_label = ctk.CTkLabel(
-                self.card_assignment.content_frame,
-                text="本地路径: 未下载",
-                font=("Arial", self.FONT_SIZE_NORMAL),
-                text_color="gray"
-            )
-            no_path_label.pack(anchor="w", pady=(0, self.PADDING_SECTION))
-
-        # 数据库记录ID
-        record_id = data.get('id')
-        if record_id:
-            id_label = ctk.CTkLabel(
-                self.card_assignment.content_frame,
-                text=f"数据库ID: {record_id}",
-                font=("Arial", 10),
-                text_color="gray"
-            )
-            id_label.pack(anchor="w")
 
     def _copy_path_to_clipboard(self, path: str) -> None:
         """复制路径到剪贴板
@@ -606,6 +689,32 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         button_container = ctk.CTkFrame(control_bar, fg_color="transparent")
         button_container.pack(side="right", padx=10)
 
+        # 取消按钮 (仅在编辑模式显示)
+        self.cancel_button = ctk.CTkButton(
+            button_container,
+            text="❌ 取消",
+            width=80,
+            height=30,
+            command=self._on_cancel_clicked,
+            fg_color="#FF922B",
+            text_color="white",
+            hover_color="#F76707"
+        )
+        # 初始不显示
+
+        # 编辑/保存按钮
+        self.edit_button = ctk.CTkButton(
+            button_container,
+            text="📝 编辑",
+            width=80,
+            height=30,
+            command=self.toggle_edit_mode,
+            fg_color="#339AF0",
+            text_color="white",
+            hover_color="#228BE6"
+        )
+        self.edit_button.pack(side="left", padx=(0, 5))
+
         # 固定按钮
         self.pin_button = ctk.CTkButton(
             button_container,
@@ -631,6 +740,102 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             hover_color="#FA5252"
         )
         close_button.pack(side="left")
+
+    def toggle_edit_mode(self) -> None:
+        """切换编辑模式"""
+        if self.is_edit_mode:
+            # 当前是编辑模式，点击的是"保存"
+            self._on_save_clicked()
+        else:
+            # 当前是浏览模式，进入编辑模式
+            self.is_edit_mode = True
+            self.edit_button.configure(text="💾 保存", fg_color="#51CF66", hover_color="#40C057")
+            self.cancel_button.pack(side="left", padx=(0, 5), before=self.edit_button)
+            
+            # 刷新显示以显示输入控件
+            if self.current_data:
+                self._load_data(self.current_data)
+
+    def _on_cancel_clicked(self) -> None:
+        """点击取消按钮"""
+        self.is_edit_mode = False
+        self.edit_button.configure(text="📝 编辑", fg_color="#339AF0", hover_color="#228BE6")
+        self.cancel_button.pack_forget()
+        
+        # 刷新显示以恢复原始数据
+        if self.current_data:
+            self._load_data(self.current_data)
+
+    def _on_save_clicked(self) -> None:
+        """保存编辑后的数据"""
+        if not self.current_data:
+            return
+
+        # 1. 收集数据
+        try:
+            new_student_id = self.edit_widgets['student_id'].get().strip()
+            new_name = self.edit_widgets['name'].get().strip()
+            new_email = self.edit_widgets['email'].get().strip()
+            new_status_text = self.edit_widgets['status'].get()
+            new_assignment_name = self.edit_widgets['assignment_name'].get()
+
+            # 2. 验证
+            if not new_student_id:
+                self._show_error("验证失败", "学号不能为空")
+                return
+            if not new_name:
+                self._show_error("验证失败", "姓名不能为空")
+                return
+
+            # 3. 状态文本映射回 Code
+            status_map = getattr(self.master, 'STATUS_MAP', {})
+            new_status_code = 'pending'
+            for code, text in status_map.items():
+                if text == new_status_text:
+                    new_status_code = code
+                    break
+
+            # 4. 调用数据库更新
+            from database.operations import db
+            submission_id = self.current_data.get('id')
+            
+            success = db.update_submission_full(
+                submission_id=submission_id,
+                student_id=new_student_id,
+                name=new_name,
+                assignment_name=new_assignment_name,
+                status=new_status_code,
+                email=new_email
+            )
+
+            if success:
+                self._show_info("成功", "记录已成功更新")
+                
+                # 5. 更新本地缓存数据以刷新显示
+                self.current_data['student_id'] = new_student_id
+                self.current_data['name'] = new_name
+                self.current_data['email'] = new_email
+                self.current_data['status'] = new_status_code
+                self.current_data['assignment_name'] = new_assignment_name
+                
+                # 6. 退出编辑模式并刷新
+                self.is_edit_mode = False
+                self.edit_button.configure(text="📝 编辑", fg_color="#339AF0", hover_color="#228BE6")
+                self.cancel_button.pack_forget()
+                
+                # 刷新侧边栏
+                self._load_data(self.current_data)
+                
+                # 刷新主界面 (如果主界面有这个方法)
+                if hasattr(self.master, 'load_data'):
+                    current_page = getattr(self.master, 'current_page', 1)
+                    self.master.load_data(current_page)
+            else:
+                self._show_error("错误", "更新数据库失败，请检查日志")
+
+        except Exception as e:
+            print(f"Error saving data: {e}")
+            self._show_error("保存出错", f"发生意外错误: {str(e)}")
 
     def show(self, submission_data: Dict):
         """显示/更新侧边栏"""
