@@ -147,9 +147,8 @@ class MainWindow(ctk.CTk):
         main_container.pack(fill="both", expand=True, padx=10, pady=(5, 10))
 
         # 左侧面板 - 筛选和控制
-        left_panel = ctk.CTkFrame(main_container, width=300)
+        left_panel = ctk.CTkScrollableFrame(main_container, width=300, label_text="")
         left_panel.pack(side="left", fill="y", padx=(0, 10))
-        left_panel.pack_propagate(False)
 
         self.create_left_panel(left_panel)
 
@@ -160,141 +159,34 @@ class MainWindow(ctk.CTk):
         self.create_right_panel(right_panel)
 
     def create_left_panel(self, parent):
-        """创建左侧筛选面板"""
-        # 标题
-        title = ctk.CTkLabel(
-            parent,
-            text="筛选条件",
-            font=("Arial", 18, "bold")
-        )
-        title.pack(pady=(20, 10))
+        """创建左侧筛选面板（重构为可折叠滚动模式）"""
+        
+        # 1. 筛选条件区块
+        self.filter_section = CollapsibleFrame(parent, title="筛选条件", is_expanded=True)
+        self.filter_section.pack(fill="x", padx=5, pady=5)
+        self._setup_filter_content(self.filter_section.content_frame)
 
-        # 搜索框
-        search_frame = ctk.CTkFrame(parent)
-        search_frame.pack(fill="x", padx=10, pady=10)
+        # 2. 统计信息区块
+        self.stats_section = CollapsibleFrame(parent, title="统计信息", is_expanded=False)
+        self.stats_section.pack(fill="x", padx=5, pady=5)
+        self._setup_stats_content(self.stats_section.content_frame)
 
-        ctk.CTkLabel(search_frame, text="搜索:").pack(anchor="w", padx=5, pady=5)
+        # 3. 批量操作区块
+        self.batch_section = CollapsibleFrame(parent, title="批量操作", is_expanded=True)
+        self.batch_section.pack(fill="x", padx=5, pady=5)
+        self._setup_batch_content(self.batch_section.content_frame)
 
-        self.search_entry = ctk.CTkEntry(search_frame, placeholder_text="学号或姓名")
-        self.search_entry.pack(fill="x", padx=5, pady=5)
-
-        search_btn = ctk.CTkButton(
-            search_frame,
-            text="搜索",
-            command=self.on_search
-        )
-        search_btn.pack(fill="x", padx=5, pady=5)
-
-        # 学生筛选
-        student_frame = ctk.CTkFrame(parent)
-        student_frame.pack(fill="x", padx=10, pady=10)
-
-        ctk.CTkLabel(student_frame, text="学生:").pack(anchor="w", padx=5, pady=5)
-
-        self.student_var = ctk.StringVar(value="全部学生")
-        self.student_dropdown = ctk.CTkOptionMenu(
-            student_frame,
-            variable=self.student_var,
-            values=["全部学生"],
-            command=self.on_filter_change
-        )
-        self.student_dropdown.pack(fill="x", padx=5, pady=5)
-
-        # 作业筛选
-        assignment_frame = ctk.CTkFrame(parent)
-        assignment_frame.pack(fill="x", padx=10, pady=10)
-
-        ctk.CTkLabel(assignment_frame, text="作业:").pack(anchor="w", padx=5, pady=5)
-
-        self.assignment_var = ctk.StringVar(value="全部作业")
-        self.assignment_dropdown = ctk.CTkOptionMenu(
-            assignment_frame,
-            variable=self.assignment_var,
-            values=["全部作业"],
-            command=self.on_filter_change
-        )
-        self.assignment_dropdown.pack(fill="x", padx=5, pady=5)
-
-        # 状态筛选
-        status_frame = ctk.CTkFrame(parent)
-        status_frame.pack(fill="x", padx=10, pady=10)
-
-        ctk.CTkLabel(status_frame, text="状态:").pack(anchor="w", padx=5, pady=5)
-
-        self.status_var = ctk.StringVar(value="全部状态")
-        status_list = ["全部状态"] + list(self.STATUS_MAP.values()) + ["正常", "逾期"]
-        self.status_dropdown = ctk.CTkOptionMenu(
-            status_frame,
-            variable=self.status_var,
-            values=status_list,
-            command=self.on_filter_change
-        )
-        self.status_dropdown.pack(fill="x", padx=5, pady=5)
-
-        # 统计信息
-        stats_frame = ctk.CTkFrame(parent)
-        stats_frame.pack(fill="x", padx=10, pady=20)
-
-        ctk.CTkLabel(
-            stats_frame,
-            text="统计信息",
-            font=("Arial", 14, "bold")
-        ).pack(pady=10)
-
-        self.stats_label = ctk.CTkLabel(
-            stats_frame,
-            text="总提交: 0\n已下载: 0\n已回复: 0",
-            justify="left"
-        )
-        self.stats_label.pack(pady=10)
-
-        # 批量操作按钮
-        batch_frame = ctk.CTkFrame(parent)
-        batch_frame.pack(fill="x", padx=10, pady=20)
-
-        ctk.CTkLabel(
-            batch_frame,
-            text="批量操作",
-            font=("Arial", 14, "bold")
-        ).pack(pady=10)
-
-        self.selected_label = ctk.CTkLabel(
-            batch_frame,
-            text="已选择: 0 项"
-        )
-        self.selected_label.pack(pady=5)
-
-        ctk.CTkButton(
-            batch_frame,
-            text="批量下载",
-            command=self.on_batch_download
-        ).pack(fill="x", padx=5, pady=5)
-
-        ctk.CTkButton(
-            batch_frame,
-            text="批量回复",
-            command=self.on_batch_reply
-        ).pack(fill="x", padx=5, pady=5)
-
-        ctk.CTkButton(
-            batch_frame,
-            text="批量删除",
-            command=self.on_batch_delete
-        ).pack(fill="x", padx=5, pady=5)
-
-        ctk.CTkButton(
-            batch_frame,
-            text="导出Excel",
-            command=self.on_export_excel
-        ).pack(fill="x", padx=5, pady=5)
-
-        # 状态栏
+        # 状态栏保持在底部（注意：由于父容器现在是可滚动的，状态栏可能需要移出滚动区域或特殊处理）
         self.status_label = ctk.CTkLabel(
-            parent,
+            self,  # 移出滚动区域，改绑到 self
             text="状态: 就绪",
             anchor="w"
         )
         self.status_label.pack(side="bottom", fill="x", padx=10, pady=10)
+
+    def _setup_filter_content(self, parent): pass
+    def _setup_stats_content(self, parent): pass
+    def _setup_batch_content(self, parent): pass
 
     def create_right_panel(self, parent):
         """创建右侧数据展示面板"""
