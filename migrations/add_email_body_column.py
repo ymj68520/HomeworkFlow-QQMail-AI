@@ -26,39 +26,32 @@ def migrate(database_path: str) -> bool:
         print(f"[ERROR] Database file not found: {database_path}")
         return False
 
-    conn = None
     try:
-        # Connect to database
-        conn = sqlite3.connect(database_path)
-        cursor = conn.cursor()
+        # Connect to database using context manager
+        with sqlite3.connect(database_path) as conn:
+            cursor = conn.cursor()
 
-        # Check if email_body column already exists
-        cursor.execute("PRAGMA table_info(submissions)")
-        columns = cursor.fetchall()
-        column_names = [col[1] for col in columns]
+            # Check if email_body column already exists
+            cursor.execute("PRAGMA table_info(submissions)")
+            columns = cursor.fetchall()
+            column_names = [col[1] for col in columns]
 
-        if 'email_body' in column_names:
-            print("[INFO] Column 'email_body' already exists in submissions table")
+            if 'email_body' in column_names:
+                print("[INFO] Column 'email_body' already exists in submissions table")
+                return True
+
+            # Add email_body column
+            print("[INFO] Adding email_body column to submissions table...")
+            cursor.execute("ALTER TABLE submissions ADD COLUMN email_body TEXT")
+
+            # Commit changes
+            conn.commit()
+            print("[PASS] Added column 'email_body' to submissions table")
             return True
 
-        # Add email_body column
-        print("[INFO] Adding email_body column to submissions table...")
-        cursor.execute("ALTER TABLE submissions ADD COLUMN email_body TEXT")
-
-        # Commit changes
-        conn.commit()
-        print("[PASS] Added column 'email_body' to submissions table")
-        return True
-
     except sqlite3.Error as e:
-        print(f"[ERROR] Database error: {e}")
+        print(f"[ERROR] Migration failed: {e}")
         return False
-
-    finally:
-        # Close connection
-        if conn:
-            conn.close()
-            print("[INFO] Database connection closed")
 
 
 if __name__ == "__main__":
