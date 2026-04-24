@@ -178,8 +178,22 @@ class IMAPClient:
                 print(f"Error fetching email {email_uid}: IMAP status {status}")
                 return None
 
+            # 检查响应数据结构
+            if not msg_data or len(msg_data) == 0:
+                print(f"Error fetching email {email_uid}: No data returned from IMAP")
+                return None
+
+            # 检查第一个元素是否存在且包含内容
+            if not msg_data[0] or len(msg_data[0]) < 2:
+                print(f"Error fetching email {email_uid}: Invalid IMAP response structure")
+                return None
+
             # 解析邮件
             raw_email = msg_data[0][1]
+            if not raw_email:
+                print(f"Error fetching email {email_uid}: Email content is empty")
+                return None
+
             email_message = email.message_from_bytes(raw_email)
 
             # 提取邮件信息
