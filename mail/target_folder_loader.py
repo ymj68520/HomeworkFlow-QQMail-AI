@@ -80,23 +80,7 @@ class TargetFolderLoader:
         合并多源数据：邮件内容 + 本地文件 + 数据库元数据
 
         Returns:
-            {
-                'id': int,
-                'student_id': str,
-                'name': str,
-                'email': str,
-                'assignment_name': str,
-                'email_uid': str,
-                'email_subject': str,        # 邮件原始主题
-                'email_from': str,           # 邮件原始发件人
-                'received_time': datetime,   # 收件时间
-                'submission_time': datetime,
-                'is_late': bool,
-                'is_downloaded': bool,
-                'is_replied': bool,
-                'local_path': str,
-                'attachments': list          # 附件列表
-            }
+            Dict containing merged info
         """
         uid = email_data.get('uid')
 
@@ -113,19 +97,34 @@ class TargetFolderLoader:
         if db_record:
             db_info = {
                 'id': db_record.id,
-                'student_id': db_record.student.student_id,
-                'name': db_record.student.name,
-                'email': db_record.student.email,
-                'assignment_name': db_record.assignment.name,
+                'student_id': db_record.student.student_id if db_record.student else "Unknown",
+                'name': db_record.student.name if db_record.student else "Unknown",
+                'email': db_record.student.email if db_record.student else db_record.sender_email,
+                'assignment_name': db_record.assignment.name if db_record.assignment else "Unknown",
                 'submission_time': db_record.submission_time,
                 'is_late': db_record.is_late,
                 'is_downloaded': db_record.is_downloaded,
                 'is_replied': db_record.is_replied,
                 'local_path': db_record.local_path,
+                'status': getattr(db_record, 'status', 'pending'),
+                'error_message': getattr(db_record, 'error_message', None),
             }
         else:
-            # 数据库中没有记录，从邮件主题提取信息
-            db_info = self._extract_from_email(email_data)
+            # 数据库中没有记录，从邮件主题提取信息 (此处无法使用异步AI提取，返回默认)
+            db_info = {
+                'id': None,
+                'student_id': 'Unknown',
+                'name': 'Unknown',
+                'email': email_data.get('from', ''),
+                'assignment_name': 'Unknown',
+                'submission_time': self._parse_date(email_data.get('date')),
+                'is_late': False,
+                'is_downloaded': False,
+                'is_replied': False,
+                'local_path': None,
+                'status': 'pending',
+                'error_message': None
+            }
 
         # 3. 从本地文件系统获取附件信息
         attachments = self._get_local_attachments(db_info.get('local_path'))
@@ -185,19 +184,23 @@ class TargetFolderLoader:
         if db_record:
             db_info = {
                 'id': db_record.id,
-                'student_id': db_record.student.student_id,
-                'name': db_record.student.name,
-                'email': db_record.student.email,
-                'assignment_name': db_record.assignment.name,
+                'student_id': db_record.student.student_id if db_record.student else "Unknown",
+                'name': db_record.student.name if db_record.student else "Unknown",
+                'email': db_record.student.email if db_record.student else db_record.sender_email,
+                'assignment_name': db_record.assignment.name if db_record.assignment else "Unknown",
                 'submission_time': db_record.submission_time,
                 'is_late': db_record.is_late,
                 'is_downloaded': db_record.is_downloaded,
                 'is_replied': db_record.is_replied,
                 'local_path': db_record.local_path,
+                'status': getattr(db_record, 'status', 'pending'),
+                'error_message': getattr(db_record, 'error_message', None),
             }
         else:
             # 数据库中没有记录，使用AI提取
             db_info = await self._extract_from_email(email_data)
+            db_info['status'] = 'pending'
+            db_info['error_message'] = None
 
         # 3. 从本地文件系统获取附件信息
         attachments = self._get_local_attachments(db_info.get('local_path'))

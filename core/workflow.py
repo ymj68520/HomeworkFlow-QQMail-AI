@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict
 from mail.parser import mail_parser_inbox as mail_parser
 from ai.extractor import ai_extractor
 from database.operations import db
@@ -9,6 +9,7 @@ from mail.imap_client import imap_client_inbox
 from mail.smtp_client import smtp_client
 from core.deduplication import deduplication_handler
 from config.settings import settings
+from database.models import SubmissionStatus
 
 class AssignmentWorkflow:
     """作业处理主流程"""
@@ -50,6 +51,16 @@ class AssignmentWorkflow:
             if not email_data['has_attachments']:
                 print("No attachments found, marking as read")
                 self.parser.mark_as_read(email_uid)
+                # 记录为忽略
+                self.db.create_submission(
+                    email_uid=email_uid,
+                    email_subject=email_data['subject'],
+                    sender_email=email_data['sender_email'],
+                    sender_name=email_data['sender_name'],
+                    submission_time=datetime.now(),
+                    status=SubmissionStatus.IGNORED.value,
+                    error_message='No attachments'
+                )
                 self.db.log_email_action(
                     email_uid=email_uid,
                     action='marked_read',
@@ -94,6 +105,16 @@ class AssignmentWorkflow:
             if not student_info.get('is_assignment'):
                 print("Not an assignment submission, marking as read")
                 self.parser.mark_as_read(email_uid)
+                # 记录为忽略
+                self.db.create_submission(
+                    email_uid=email_uid,
+                    email_subject=email_data['subject'],
+                    sender_email=email_data['sender_email'],
+                    sender_name=email_data['sender_name'],
+                    submission_time=datetime.now(),
+                    status=SubmissionStatus.IGNORED.value,
+                    error_message='Not an assignment'
+                )
                 self.db.log_email_action(
                     email_uid=email_uid,
                     action='marked_read',
@@ -110,6 +131,16 @@ class AssignmentWorkflow:
             if not all([student_id, student_name, assignment_name]):
                 print("Missing required information, marking as read")
                 self.parser.mark_as_read(email_uid)
+                # 记录为 AI 提取异常
+                self.db.create_submission(
+                    email_uid=email_uid,
+                    email_subject=email_data['subject'],
+                    sender_email=email_data['sender_email'],
+                    sender_name=email_data['sender_name'],
+                    submission_time=datetime.now(),
+                    status=SubmissionStatus.AI_ERROR.value,
+                    error_message=f'Missing info: student_id={student_id}, name={student_name}, assignment={assignment_name}'
+                )
                 self.db.log_email_action(
                     email_uid=email_uid,
                     action='marked_read',
@@ -118,104 +149,8 @@ class AssignmentWorkflow:
                 )
                 return {'success': True, 'action': 'marked_read', 'reason': 'missing_info'}
 
-            # 6. 检查是否为重复提交
-            is_duplicate, dup_result = await self.dedup.check_and_handle_duplicate(
-                student_id=student_id,
-                student_name=student_name,
-                assignment_name=assignment_name,
-                email_uid=email_uid,
-                sender_email=email_data['sender_email'],
-                email_subject=email_data['subject'],
-                attachments=email_data['attachments']
-            )
-
-            if is_duplicate:
-                if dup_result.get('success'):
-                    print(f"Duplicate submission updated: {student_id} - {assignment_name}")
-                    return {'success': True, 'action': 'updated_duplicate', 'data': dup_result}
-                else:
-                    print(f"Failed to handle duplicate: {dup_result.get('error')}")
-                    return {'success': False, 'error': dup_result.get('error'), 'action': 'duplicate_failed'}
-
-            # 7. 保存附件到本地
-            print("Storing attachments locally...")
-            local_path = self.storage.store_submission(
-                assignment_name=assignment_name,
-                student_id=student_id,
-                name=student_name,
-                attachments=email_data['attachments']
-            )
-
-            print(f"Files stored at: {local_path}")
-
-            # 8. 存储到数据库
-            print("Saving to database...")
-            submission = self.db.create_submission(
-                student_id=student_id,
-                assignment_name=assignment_name,
-                email_uid=email_uid,
-                email_subject=email_data['subject'],
-                sender_email=email_data['sender_email'],
-                sender_name=student_name,
-                submission_time=datetime.now(),
-                local_path=local_path
-            )
-
-            if not submission:
-                return {'success': False, 'error': 'Failed to save to database', 'action': 'db_failed'}
-
-            # 9. 添加附件记录
-            for attachment in email_data['attachments']:
-                self.db.add_attachment(
-                    submission_id=submission.id,
-                    filename=attachment['filename'],
-                    file_size=attachment['size'],
-                    local_path=f"{local_path}/{attachment['filename']}"
-                )
-
-            # 10. 移动邮件到目标文件夹
-            print(f"Moving email to {self.settings.TARGET_FOLDER}...")
-            if not self.imap.folder_exists(self.settings.TARGET_FOLDER):
-                print(f"Creating target folder: {self.settings.TARGET_FOLDER}")
-                self.imap.create_folder(self.settings.TARGET_FOLDER)
-
-            move_success = self.parser.move_to_folder(email_uid, self.settings.TARGET_FOLDER)
-
-            if not move_success:
-                print(f"Warning: Failed to move email to {self.settings.TARGET_FOLDER}")
-
-            # 11. 发送确认邮件
-            print("Sending confirmation email...")
-            self.smtp.send_reply(
-                to_email=email_data['sender_email'],
-                student_name=student_name,
-                assignment_name=assignment_name
-            )
-
-            # 12. 标记已回复
-            self.db.mark_replied(submission.id)
-
-            # 13. 记录日志
-            self.db.log_email_action(
-                email_uid=email_uid,
-                action='processed',
-                folder=self.settings.TARGET_FOLDER,
-                details=f"Processed assignment from {student_id} - {assignment_name}"
-            )
-
-            print(f"Successfully processed: {student_id} - {student_name} - {assignment_name}")
-
-            return {
-                'success': True,
-                'action': 'processed',
-                'data': {
-                    'student_id': student_id,
-                    'name': student_name,
-                    'assignment': assignment_name,
-                    'local_path': local_path,
-                    'submission_id': submission.id
-                }
-            }
+            # 6. 继续处理正常流程
+            return await self._process_extracted_info(email_uid, email_data, student_info)
 
         except Exception as e:
             print(f"Error processing email {email_uid}: {e}")
@@ -240,7 +175,7 @@ class AssignmentWorkflow:
     ) -> dict:
         """
         Process email with already-extracted student info
-        This contains steps 5-13 from process_new_email to avoid code duplication
+        This contains steps from deduplication to reply
 
         Args:
             email_uid: Email UID
@@ -258,35 +193,12 @@ class AssignmentWorkflow:
             print(f"Processing extracted info: {email_uid}")
         print(f"{'='*50}")
 
-        # 5. 判断是否为作业提交
-        if not student_info.get('is_assignment'):
-            print("Not an assignment submission, marking as read")
-            self.parser.mark_as_read(email_uid)
-            self.db.log_email_action(
-                email_uid=email_uid,
-                action='marked_read',
-                folder='INBOX',
-                details='Not an assignment'
-            )
-            return {'success': True, 'action': 'marked_read', 'reason': 'not_assignment'}
-
-        # 6. 验证必要信息
+        # 获取必要信息
         student_id = student_info.get('student_id')
         student_name = student_info.get('name')
         assignment_name = student_info.get('assignment_name')
 
-        if not all([student_id, student_name, assignment_name]):
-            print("Missing required information, marking as read")
-            self.parser.mark_as_read(email_uid)
-            self.db.log_email_action(
-                email_uid=email_uid,
-                action='marked_read',
-                folder='INBOX',
-                details=f'Missing info: student_id={student_id}, name={student_name}, assignment={assignment_name}'
-            )
-            return {'success': True, 'action': 'marked_read', 'reason': 'missing_info'}
-
-        # 7. 检查是否为重复提交
+        # 1. 检查是否为重复提交
         is_duplicate, dup_result = await self.dedup.check_and_handle_duplicate(
             student_id=student_id,
             student_name=student_name,
@@ -305,7 +217,7 @@ class AssignmentWorkflow:
                 print(f"Failed to handle duplicate: {dup_result.get('error')}")
                 return {'success': False, 'error': dup_result.get('error'), 'action': 'duplicate_failed'}
 
-        # 8. 保存附件到本地
+        # 2. 保存附件到本地
         print("Storing attachments locally...")
         local_path = self.storage.store_submission(
             assignment_name=assignment_name,
@@ -316,8 +228,9 @@ class AssignmentWorkflow:
 
         print(f"Files stored at: {local_path}")
 
-        # 9. 存储到数据库
+        # 3. 存储到数据库
         print("Saving to database...")
+        status = SubmissionStatus.UNREPLIED.value if local_path else SubmissionStatus.DOWNLOAD_FAILED.value
         submission = self.db.create_submission(
             student_id=student_id,
             assignment_name=assignment_name,
@@ -326,13 +239,14 @@ class AssignmentWorkflow:
             sender_email=email_data['sender_email'],
             sender_name=student_name,
             submission_time=datetime.now(),
-            local_path=local_path
+            local_path=local_path,
+            status=status
         )
 
         if not submission:
             return {'success': False, 'error': 'Failed to save to database', 'action': 'db_failed'}
 
-        # 10. 添加附件记录
+        # 4. 添加附件记录
         for attachment in email_data['attachments']:
             self.db.add_attachment(
                 submission_id=submission.id,
@@ -341,7 +255,7 @@ class AssignmentWorkflow:
                 local_path=f"{local_path}/{attachment['filename']}"
             )
 
-        # 11. 移动邮件到目标文件夹
+        # 5. 移动邮件到目标文件夹
         print(f"Moving email to {self.settings.TARGET_FOLDER}...")
         if not self.imap.folder_exists(self.settings.TARGET_FOLDER):
             print(f"Creating target folder: {self.settings.TARGET_FOLDER}")
@@ -352,18 +266,20 @@ class AssignmentWorkflow:
         if not move_success:
             print(f"Warning: Failed to move email to {self.settings.TARGET_FOLDER}")
 
-        # 12. 发送确认邮件
+        # 6. 发送确认邮件
         print("Sending confirmation email...")
-        self.smtp.send_reply(
+        reply_sent = self.smtp.send_reply(
             to_email=email_data['sender_email'],
             student_name=student_name,
             assignment_name=assignment_name
         )
 
-        # 13. 标记已回复
-        self.db.mark_replied(submission.id)
+        # 7. 标记已回复
+        if reply_sent:
+            self.db.mark_replied(submission.id)
+            self.db.update_submission_status(submission.id, SubmissionStatus.COMPLETED.value)
 
-        # 14. 记录日志
+        # 8. 记录日志
         log_action = 'reprocessed' if is_retry else 'processed'
         self.db.log_email_action(
             email_uid=email_uid,

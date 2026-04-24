@@ -19,7 +19,8 @@ async def fix_assignment_names():
         error_count = 0
 
         for submission in submissions:
-            assignment_name = submission.assignment.name
+            # 安全获取作业名称
+            assignment_name = submission.assignment.name if submission.assignment else "Unknown"
 
             # 检查是否为"作业+长数字"格式（学号被误认为作业号）
             if assignment_name.startswith('作业'):
@@ -29,7 +30,9 @@ async def fix_assignment_names():
                 if num_part.isdigit() and len(num_part) >= 10:
                     print(f"\n发现错误的作业名称:")
                     print(f"  ID: {submission.id}")
-                    print(f"  学生: {submission.student.student_id} - {submission.student.name}")
+                    
+                    student_info = f"{submission.student.student_id} - {submission.student.name}" if submission.student else "Unknown Student"
+                    print(f"  学生: {student_info}")
                     print(f"  错误的作业名称: {assignment_name}")
                     print(f"  邮件主题: {submission.email_subject}")
 
