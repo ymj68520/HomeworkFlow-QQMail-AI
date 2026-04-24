@@ -184,9 +184,72 @@ class MainWindow(ctk.CTk):
         )
         self.status_label.pack(side="bottom", fill="x", padx=10, pady=10)
 
-    def _setup_filter_content(self, parent): pass
-    def _setup_stats_content(self, parent): pass
-    def _setup_batch_content(self, parent): pass
+    def _setup_filter_content(self, parent):
+        # 搜索框
+        search_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        search_frame.pack(fill="x", pady=5)
+        
+        self.search_entry = ctk.CTkEntry(search_frame, placeholder_text="搜索学号/姓名...")
+        self.search_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        
+        search_btn = ctk.CTkButton(search_frame, text="搜索", width=60, command=self.on_search)
+        search_btn.pack(side="right")
+
+        # 筛选器
+        ctk.CTkLabel(parent, text="按学生筛选:").pack(anchor="w", pady=(10, 0))
+        self.student_var = ctk.StringVar(value="全部学生")
+        self.student_dropdown = ctk.CTkOptionMenu(
+            parent, 
+            values=["全部学生"],
+            variable=self.student_var,
+            command=self.on_filter_change
+        )
+        self.student_dropdown.pack(fill="x", pady=5)
+
+        ctk.CTkLabel(parent, text="按作业筛选:").pack(anchor="w", pady=(10, 0))
+        self.assignment_var = ctk.StringVar(value="全部作业")
+        self.assignment_dropdown = ctk.CTkOptionMenu(
+            parent, 
+            values=["全部作业"],
+            variable=self.assignment_var,
+            command=self.on_filter_change
+        )
+        self.assignment_dropdown.pack(fill="x", pady=5)
+
+        ctk.CTkLabel(parent, text="按状态筛选:").pack(anchor="w", pady=(10, 0))
+        self.status_var = ctk.StringVar(value="全部状态")
+        status_options = ["全部状态", "正常", "逾期"] + list(self.STATUS_MAP.values())
+        self.status_dropdown = ctk.CTkOptionMenu(
+            parent, 
+            values=status_options,
+            variable=self.status_var,
+            command=self.on_filter_change
+        )
+        self.status_dropdown.pack(fill="x", pady=5)
+
+    def _setup_stats_content(self, parent):
+        self.stats_label = ctk.CTkLabel(
+            parent,
+            text="总提交: 0\n已下载: 0\n已回复: 0",
+            justify="left",
+            anchor="w"
+        )
+        self.stats_label.pack(fill="x", padx=5, pady=5)
+
+    def _setup_batch_content(self, parent):
+        self.selected_label = ctk.CTkLabel(parent, text="已选择: 0 项")
+        self.selected_label.pack(pady=5)
+
+        btns_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        btns_frame.pack(fill="x")
+
+        # 第一行并排
+        ctk.CTkButton(btns_frame, text="批量下载", command=self.on_batch_download, width=130).grid(row=0, column=0, padx=2, pady=2)
+        ctk.CTkButton(btns_frame, text="批量回复", command=self.on_batch_reply, width=130).grid(row=0, column=1, padx=2, pady=2)
+        
+        # 第二行并排
+        ctk.CTkButton(btns_frame, text="批量删除", command=self.on_batch_delete, width=130).grid(row=1, column=0, padx=2, pady=2)
+        ctk.CTkButton(btns_frame, text="导出Excel", command=self.on_export_excel, width=130).grid(row=1, column=1, padx=2, pady=2)
 
     def create_right_panel(self, parent):
         """创建右侧数据展示面板"""
