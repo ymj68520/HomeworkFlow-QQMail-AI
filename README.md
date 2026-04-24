@@ -135,7 +135,10 @@ Batch retry metrics:
 系统支持邮件预览侧边栏，双击表格中任何邮件条目即可查看详细信息，包括：
 - 学生信息和提交状态
 - 邮件完整信息
+- 邮件正文内容（支持HTML转Markdown、图片移除、中文显示）
 - 附件列表和文件操作
 - 支持智能切换和固定模式
 
-详细使用说明请参考 [邮件预览使用指南](docs/EMAIL_PREVIEW_USER_GUIDE.md)
+详细使用说明请参考：
+- [邮件预览使用指南](docs/EMAIL_PREVIEW_USER_GUIDE.md)
+- [邮件正文功能文档](docs/email_body_feature.md)
