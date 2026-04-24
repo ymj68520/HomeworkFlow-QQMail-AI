@@ -1,4 +1,5 @@
 from mail.imap_client import imap_client_inbox, imap_client_target
+from mail.email_body_extractor import EmailBodyExtractor
 from typing import Dict, Optional
 
 class MailParser:
@@ -36,7 +37,12 @@ class MailParser:
                         'size': int
                     },
                     ...
-                ]
+                ],
+                'email_body': {
+                    'plain_text': str or None,
+                    'html_markdown': str or None,
+                    'format': 'text', 'html', 'both', or 'empty'
+                }
             }
         """
         # 获取邮件
@@ -50,6 +56,10 @@ class MailParser:
         # 提取附件
         attachments = self.imap.extract_attachments(email_data['message'])
 
+        # 提取邮件正文
+        extractor = EmailBodyExtractor()
+        email_body = extractor.extract_body(email_data['message'])
+
         return {
             'uid': email_data['uid'],
             'subject': email_data['subject'],
@@ -58,7 +68,8 @@ class MailParser:
             'to': email_data['to'],
             'date': email_data['date'],
             'has_attachments': len(attachments) > 0,
-            'attachments': attachments
+            'attachments': attachments,
+            'email_body': email_body
         }
 
     def get_new_emails(self) -> list:
