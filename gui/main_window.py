@@ -1,9 +1,11 @@
 import customtkinter as ctk
 from tkinter import ttk, messagebox
-from typing import List, Dict
+from typing import List, Dict, Any
 from datetime import datetime
 from database.operations import db
+from database.models import db_session
 from config.settings import settings
+from gui.batch_edit_popup import BatchEditPopup
 
 class CollapsibleFrame(ctk.CTkFrame):
     """可折叠的框架组件"""
@@ -345,6 +347,9 @@ class MainWindow(ctk.CTk):
         # 绑定双击事件用于打开预览
         self.tree.bind("<Double-1>", self.on_tree_double_click)
 
+        # 绑定右键点击事件用于批量修改
+        self.tree.bind("<Button-3>", self.on_tree_right_click)
+
         # 分页控件
         pagination_frame = ctk.CTkFrame(parent)
         pagination_frame.pack(fill="x", padx=10, pady=(5, 10))
@@ -425,9 +430,6 @@ class MainWindow(ctk.CTk):
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        # 清空选中状态
-        self.checked_items.clear()
-
         # 填充数据
         for sub in self.filtered_submissions:
             status_code = sub.get('status', 'pending')
@@ -464,9 +466,6 @@ class MainWindow(ctk.CTk):
             # 设置颜色标签
             self.tree.tag_configure(status_code, foreground=self.STATUS_COLORS.get(status_code, "black"))
             self.tree.item(item_id, tags=(status_code,))
-
-            # 设置初始复选框状态
-            self.checked_items[item_id] = False
 
     def update_stats(self):
         """更新统计信息"""
@@ -545,20 +544,12 @@ class MainWindow(ctk.CTk):
     def on_tree_click(self, event) -> None:
         """处理 Treeview 点击事件"""
         region = self.tree.identify("region", event.x, event.y)
-        if region != "cell" and region != "heading":
+        
+        # 如果点击的不是单元格区域，且侧边栏可见且未固定，则隐藏侧边栏
+        if region != "cell":
             if hasattr(self, 'preview_drawer') and self.preview_drawer.is_visible and not self.preview_drawer.is_pinned:
                 self.preview_drawer.hide()
             return
-
-        column = self.tree.identify("column", event.x, event.y)
-        if column != "#1":
-            return
-
-        item = self.tree.identify_row(event.y)
-        if not item:
-            return
-
-        self.toggle_checkbox(item)
 
     def on_tree_double_click(self, event) -> None:
         """处理表格双击事件"""
@@ -580,51 +571,110 @@ class MainWindow(ctk.CTk):
             messagebox.showerror("预览错误", f"无法打开邮件预览：\n{str(e)}")
 
     def on_tree_select(self, event):
-        """表格选择事件"""
+        """表格选择事件：同步勾选符号和计数"""
         selected_items = self.tree.selection()
-        self.selected_items = selected_items
+        selected_set = set(selected_items)
+        
+        # 同步视觉符号
+        for item_id in self.tree.get_children():
+            is_selected = item_id in selected_set
+            current_symbol = self.tree.set(item_id, "select")
+            new_symbol = "☑" if is_selected else "☐"
+            
+            # 仅在符号改变时更新，优化性能
+            if current_symbol != new_symbol:
+                self.tree.set(item_id, "select", new_symbol)
+        
+        # 更新计数
         count = len(selected_items)
         self.selected_label.configure(text=f"已选择: {count} 项")
 
+    def on_tree_right_click(self, event):
+        """处理右键点击：显示批量修改弹出层"""
+        selected_items = self.tree.selection()
+        if not selected_items:
+            # 如果没有选中，可以尝试选中鼠标下的那一行
+            item = self.tree.identify_row(event.y)
+            if item:
+                self.tree.selection_set(item)
+                selected_items = (item,)
+            else:
+                return
+
+        # 获取选中的提交数据
+        submissions = []
+        for item_id in selected_items:
+            index = self.tree.index(item_id)
+            if 0 <= index < len(self.filtered_submissions):
+                submissions.append(self.filtered_submissions[index])
+
+        if submissions:
+            # 显示弹出层
+            popup = BatchEditPopup(
+                self, 
+                submissions, 
+                on_update=lambda f, v: self.handle_batch_update(submissions, f, v)
+            )
+
+    def handle_batch_update(self, submissions: List[Dict], field_id: str, new_value: Any):
+        """处理批量更新逻辑"""
+        success_count = 0
+        last_error = None
+        
+        # 如果是状态修改，需要将显示文本转回 code
+        if field_id == 'status':
+            target_code = None
+            for code, text in self.STATUS_MAP.items():
+                if text == new_value:
+                    target_code = code
+                    break
+            if target_code:
+                new_value = target_code
+
+        try:
+            for sub in submissions:
+                try:
+                    # 传入 id, email_uid 和 message_id 以确保即使 DB 中没有记录也能根据标识符定位或创建
+                    if db.update_submission_field(
+                        sub.get('id'), 
+                        field_id, 
+                        new_value, 
+                        email_uid=sub.get('email_uid'),
+                        message_id=sub.get('message_id')
+                    ):
+                        success_count += 1
+                    else:
+                        last_error = f"ID:{sub.get('id')} 更新返回失败"
+                except Exception as e:
+                    last_error = str(e)
+            
+            if success_count > 0:
+                messagebox.showinfo("成功", f"成功修改 {success_count}/{len(submissions)} 条记录")
+                self.load_data(self.current_page)
+            else:
+                messagebox.showerror("错误", f"修改失败。\n原因: {last_error or '未知错误'}\n请检查日志获取详细堆栈。")
+        except Exception as e:
+            messagebox.showerror("严重错误", f"批量处理过程中发生异常: {str(e)}")
+        finally:
+            db_session.remove()
+
     def on_select_all(self):
         """全选"""
-        items = self.tree.get_children()
-        for item_id in items:
-            self.checked_items[item_id] = True
-            self.tree.set(item_id, "select", "☑")
-        self.update_selected_count()
+        all_items = self.tree.get_children()
+        self.tree.selection_set(all_items)
 
     def on_clear_selection(self):
         """清除选择"""
-        items = self.tree.get_children()
-        for item_id in items:
-            self.checked_items[item_id] = False
-            self.tree.set(item_id, "select", "☐")
-        self.update_selected_count()
-
-    def toggle_checkbox(self, item_id):
-        """切换复选框状态"""
-        current_state = self.checked_items.get(item_id, False)
-        new_state = not current_state
-        self.checked_items[item_id] = new_state
-        checkbox_symbol = "☑" if new_state else "☐"
-        self.tree.set(item_id, "select", checkbox_symbol)
-        self.update_selected_count()
-
-    def update_selected_count(self):
-        """更新选中项计数"""
-        count = sum(1 for checked in self.checked_items.values() if checked)
-        self.selected_label.configure(text=f"已选择: {count} 项")
+        self.tree.selection_remove(self.tree.selection())
 
     def get_checked_submissions(self) -> List[dict]:
         """获取所有选中的记录"""
-        checked_items = self.tree.get_children()
+        selected_items = self.tree.selection()
         result = []
-        for item_id in checked_items:
-            if self.checked_items.get(item_id, False):
-                index = self.tree.index(item_id)
-                if 0 <= index < len(self.filtered_submissions):
-                    result.append(self.filtered_submissions[index])
+        for item_id in selected_items:
+            index = self.tree.index(item_id)
+            if 0 <= index < len(self.filtered_submissions):
+                result.append(self.filtered_submissions[index])
         return result
 
     def on_batch_download(self):
@@ -715,13 +765,17 @@ class MainWindow(ctk.CTk):
         """批量删除"""
         submissions = self.get_checked_submissions()
         if not submissions: return
-        if not messagebox.askyesno("确认", f"确定删除这 {len(submissions)} 条记录吗？"): return
+        if not messagebox.askyesno("确认", f"确定删除这 {len(submissions)} 条记录吗？\n注意：这会将对应的邮件移动回INBOX。"): return
 
+        from core.workflow import workflow
+        
+        success_count = 0
         for s in submissions:
-            db.delete_submission(s['id'])
+            if workflow.delete_submission(s['id']):
+                success_count += 1
         
         self.load_data()
-        messagebox.showinfo("结果", "删除完成")
+        messagebox.showinfo("结果", f"删除完成！成功: {success_count}/{len(submissions)}")
 
     def on_export_excel(self):
         messagebox.showinfo("提示", "导出Excel功能待实现")
