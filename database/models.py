@@ -1,3 +1,4 @@
+import enum
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
@@ -5,6 +6,14 @@ from datetime import datetime
 from config.settings import settings
 
 Base = declarative_base()
+
+class SubmissionStatus(str, enum.Enum):
+    PENDING = "pending"              # 未处理 (刚接收)
+    AI_ERROR = "ai_error"            # 识别异常 (AI无法提取关键信息)
+    DOWNLOAD_FAILED = "download_failed" # 下载失败
+    UNREPLIED = "unreplied"          # 未回复 (提取并下载成功，未发送确认邮件)
+    COMPLETED = "completed"          # 已完成 (全部处理完毕)
+    IGNORED = "ignored"              # 已忽略 (非作业邮件等)
 
 class Student(Base):
     __tablename__ = 'students'
@@ -31,8 +40,8 @@ class Submission(Base):
     __tablename__ = 'submissions'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    student_id = Column(Integer, ForeignKey('students.id'), nullable=False)
-    assignment_id = Column(Integer, ForeignKey('assignments.id'), nullable=False)
+    student_id = Column(Integer, ForeignKey('students.id'), nullable=True)
+    assignment_id = Column(Integer, ForeignKey('assignments.id'), nullable=True)
     email_uid = Column(String(100), unique=True, nullable=False)
     email_subject = Column(Text)
     sender_email = Column(String(100))
@@ -42,6 +51,11 @@ class Submission(Base):
     is_late = Column(Boolean, default=False)
     is_downloaded = Column(Boolean, default=False)
     is_replied = Column(Boolean, default=False)
+    
+    # 新增字段
+    status = Column(String(20), default=SubmissionStatus.PENDING.value, nullable=False)
+    error_message = Column(Text, nullable=True)
+    
     local_path = Column(Text)
     version = Column(Integer, default=1, nullable=False)
     is_latest = Column(Boolean, default=True, nullable=True)
