@@ -62,7 +62,7 @@ class AssignmentWorkflow:
             print("Extracting student info using AI...")
             student_info = await self.ai.extract_student_info(
                 subject=email_data['subject'],
-                sender=email_data['from'],
+                sender=email_data['sender_email'],
                 attachments=email_data['attachments']
             )
 
