@@ -1,0 +1,57 @@
+/* 
+ * 现代化 SaaS 风格全局样式表 - 亮色模式
+ */
+
+QMainWindow, QDialog, QFrame {
+    background-color: #F3F4F6;
+    color: #111827;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+/* 卡片样式 */
+QFrame#Card, QFrame#Drawer, QFrame#BatchCard {
+    background-color: #FFFFFF;
+    border: 1px solid #E5E7EB;
+    border-radius: 12px;
+}
+
+/* 侧边栏 */
+QFrame#Sidebar {
+    background-color: #FFFFFF;
+    border-right: 1px solid #E5E7EB;
+}
+
+/* 标题样式 */
+QLabel {
+    color: #111827;
+}
+
+/* 输入框样式 */
+QLineEdit, QComboBox {
+    background-color: #FFFFFF;
+    border: 1px solid #D1D5DB;
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: #111827;
+}
+
+QLineEdit:focus, QComboBox:focus {
+    border: 1px solid #339AF0;
+}
+
+/* 按钮基础样式 */
+QPushButton {
+    border-radius: 6px;
+    font-weight: 500;
+}
+
+QPushButton#PrimaryButton {
+    background-color: #339AF0;
+    color: #FFFFFF;
+    border: none;
+    padding: 8px 16px;
+}
+
+QPushButton#PrimaryButton:hover {
+    background-color: #228BE6;
+}

@@ -52,6 +52,8 @@ class AssignmentWorkflow:
                 print("No attachments found, marking as read")
                 self.parser.mark_as_read(email_uid)
                 # 记录为忽略
+                import json
+                body_json = json.dumps(email_data.get('email_body'), ensure_ascii=False) if email_data.get('email_body') else None
                 self.db.create_submission(
                     email_uid=email_uid,
                     message_id=email_data.get('message_id'),
@@ -60,7 +62,8 @@ class AssignmentWorkflow:
                     sender_name=email_data['sender_name'],
                     submission_time=datetime.now(),
                     status=SubmissionStatus.IGNORED.value,
-                    error_message='No attachments'
+                    error_message='No attachments',
+                    body=body_json
                 )
                 self.db.log_email_action(
                     email_uid=email_uid,
@@ -107,6 +110,8 @@ class AssignmentWorkflow:
                 print("Not an assignment submission, marking as read")
                 self.parser.mark_as_read(email_uid)
                 # 记录为忽略
+                import json
+                body_json = json.dumps(email_data.get('email_body'), ensure_ascii=False) if email_data.get('email_body') else None
                 self.db.create_submission(
                     email_uid=email_uid,
                     message_id=email_data.get('message_id'),
@@ -115,7 +120,8 @@ class AssignmentWorkflow:
                     sender_name=email_data['sender_name'],
                     submission_time=datetime.now(),
                     status=SubmissionStatus.IGNORED.value,
-                    error_message='Not an assignment'
+                    error_message='Not an assignment',
+                    body=body_json
                 )
                 self.db.log_email_action(
                     email_uid=email_uid,
@@ -233,6 +239,8 @@ class AssignmentWorkflow:
         # 3. 存储到数据库
         print("Saving to database...")
         status = SubmissionStatus.UNREPLIED.value if local_path else SubmissionStatus.DOWNLOAD_FAILED.value
+        import json
+        body_json = json.dumps(email_data.get('email_body'), ensure_ascii=False) if email_data.get('email_body') else None
         submission = self.db.create_submission(
             student_id=student_id,
             assignment_name=assignment_name,
@@ -242,7 +250,8 @@ class AssignmentWorkflow:
             sender_name=student_name,
             submission_time=datetime.now(),
             local_path=local_path,
-            status=status
+            status=status,
+            body=body_json
         )
 
         if not submission:
@@ -269,12 +278,16 @@ class AssignmentWorkflow:
             print(f"Warning: Failed to move email to {self.settings.TARGET_FOLDER}")
 
         # 6. 发送确认邮件
-        print("Sending confirmation email...")
-        reply_sent = self.smtp.send_reply(
-            to_email=email_data['sender_email'],
-            student_name=student_name,
-            assignment_name=assignment_name
-        )
+        reply_sent = False
+        if self.settings.ENABLE_REPLY:
+            print("Sending confirmation email...")
+            reply_sent = self.smtp.send_reply(
+                to_email=email_data['sender_email'],
+                student_name=student_name,
+                assignment_name=assignment_name
+            )
+        else:
+            print("INFO: 邮件回复功能已禁用，跳过发送步骤。")
 
         # 7. 标记已回复
         if reply_sent:

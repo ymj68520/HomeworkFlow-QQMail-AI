@@ -53,6 +53,10 @@ class SMTPClient:
             assignment_name: 作业名称
             custom_message: 自定义消息（可选）
         """
+        if not settings.ENABLE_REPLY:
+            print("DEBUG: SMTPClient.send_reply called but feature is disabled in settings.")
+            return False
+
         try:
             if not self.connection:
                 if not self.connect():

@@ -14,6 +14,7 @@ from config.settings import settings
 
 def main():
     """主函数"""
+    import sys
     # 修复 Windows 控制台编码问题，并启用行缓冲让日志实时显示
     if sys.platform == 'win32':
         import io
@@ -34,9 +35,23 @@ def main():
 
     # 启动GUI
     try:
+        from PySide6.QtWidgets import QApplication
+        from gui.main_window import MainWindow
+        import sys
+
         print("启动图形界面...")
-        app = MainWindow()
-        app.mainloop()
+        app = QApplication(sys.argv)
+        
+        # 加载样式
+        try:
+            with open("gui/styles/theme.qss", "r", encoding="utf-8") as f:
+                app.setStyleSheet(f.read())
+        except Exception as e:
+            print(f"Warning: Could not load theme.qss: {e}")
+
+        window = MainWindow()
+        window.show()
+        sys.exit(app.exec())
     except Exception as e:
         print(f"启动失败: {e}")
         import traceback

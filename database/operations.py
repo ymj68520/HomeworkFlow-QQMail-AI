@@ -1,13 +1,17 @@
 import json
 from datetime import datetime
-from typing import Optional, List, Dict
-from database.models import SessionLocal, Student, Assignment, Submission, Attachment, EmailLog
+from typing import Optional, List, Dict, Any
+from database.models import db_session, Student, Assignment, Submission, Attachment, EmailLog
 from sqlalchemy import or_, and_
 import sqlite3
 
 class DatabaseOperations:
+    @property
+    def session(self):
+        return db_session()
+
     def __init__(self):
-        self.session = SessionLocal()
+        pass
 
     def create_student(self, student_id: str, name: str, email: Optional[str] = None) -> Student:
         """Create or get existing student"""
@@ -53,13 +57,15 @@ class DatabaseOperations:
         sender_email: str,
         sender_name: str,
         submission_time: datetime,
+        message_id: Optional[str] = None,
         student_id: Optional[str] = None,
         assignment_name: Optional[str] = None,
         local_path: Optional[str] = None,
         version: int = 1,
         is_latest: bool = True,
         status: str = 'pending',
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
+        body: Optional[str] = None
     ) -> Optional[Submission]:
         """Create or update a submission with status tracking"""
         try:
@@ -76,8 +82,13 @@ class DatabaseOperations:
                 assignment_obj = self.create_assignment(assignment_name)
                 assignment_db_id = assignment_obj.id
 
-            # 3. 检查是否已存在记录 (通过 email_uid)
-            existing = self.session.query(Submission).filter_by(email_uid=email_uid).first()
+            # 3. 检查是否已存在记录 (优先通过 message_id, 其次通过 email_uid)
+            existing = None
+            if message_id:
+                existing = self.session.query(Submission).filter_by(message_id=message_id).first()
+            
+            if not existing:
+                existing = self.session.query(Submission).filter_by(email_uid=email_uid).first()
             
             # 计算是否逾期
             is_late = False
@@ -86,11 +97,14 @@ class DatabaseOperations:
 
             if existing:
                 # 更新现有记录
-                existing.student_id = student_db_id
-                existing.assignment_id = assignment_db_id
+                if student_db_id: existing.student_id = student_db_id
+                if assignment_db_id: existing.assignment_id = assignment_db_id
+                if message_id: existing.message_id = message_id
+                existing.email_uid = email_uid # UID 可能会变
                 existing.email_subject = email_subject
                 existing.submission_time = submission_time
-                existing.local_path = local_path
+                if local_path: existing.local_path = local_path
+                if body: existing.body = body
                 existing.version = version
                 existing.is_latest = is_latest
                 existing.is_late = is_late
@@ -104,11 +118,13 @@ class DatabaseOperations:
                 submission = Submission(
                     student_id=student_db_id,
                     assignment_id=assignment_db_id,
+                    message_id=message_id,
                     email_uid=email_uid,
                     email_subject=email_subject,
                     sender_email=sender_email,
                     sender_name=sender_name,
                     submission_time=submission_time,
+                    body=body,
                     is_late=is_late,
                     local_path=local_path,
                     version=version,
@@ -155,23 +171,31 @@ class DatabaseOperations:
 
     def update_submission_full(
         self,
-        submission_id: int,
+        submission_id: Optional[int],
         student_id: str,
         name: str,
         assignment_name: str,
         status: str,
-        email: Optional[str] = None
+        email: Optional[str] = None,
+        email_uid: Optional[str] = None,
+        email_subject: Optional[str] = None,
+        sender_email: Optional[str] = None,
+        submission_time: Optional[datetime] = None
     ) -> bool:
         """
         Full update of a submission, including student and assignment associations.
+        If submission_id is not found but email_uid is provided, create a new submission.
         """
         try:
             # 1. Get submission
-            submission = self.session.query(Submission).filter_by(id=submission_id).first()
-            if not submission:
-                return False
-
-            # 2. Get or create student, update if info changed
+            submission = None
+            if submission_id:
+                submission = self.session.query(Submission).filter_by(id=submission_id).first()
+            
+            if not submission and email_uid:
+                submission = self.session.query(Submission).filter_by(email_uid=email_uid).first()
+            
+            # 2. Get or create student
             student = self.create_student(student_id, name, email)
             student_changed = False
             if student.name != name:
@@ -187,18 +211,40 @@ class DatabaseOperations:
             # 3. Get or create assignment
             assignment = self.create_assignment(assignment_name)
 
-            # 4. Update submission fields
+            # 4. If still no submission, create it now that we have student and assignment IDs
+            if not submission:
+                if email_uid:
+                    print(f"Submission not found for email_uid: {email_uid}, creating new record.")
+                    if not submission_time:
+                        submission_time = datetime.now()
+                    
+                    submission = Submission(
+                        email_uid=email_uid,
+                        email_subject=email_subject or f"Manual Submission - {assignment_name}",
+                        sender_email=sender_email or email or "Unknown",
+                        sender_name=name or "Unknown",
+                        submission_time=submission_time,
+                        status=status,
+                        student_id=student.id,
+                        assignment_id=assignment.id
+                    )
+                    self.session.add(submission)
+                else:
+                    print(f"Error: Submission not found (id={submission_id}) and no email_uid provided to create it.")
+                    return False
+
+            # 5. Update submission fields (for existing or just created)
             submission.student_id = student.id
             submission.assignment_id = assignment.id
             submission.status = status
 
-            # 5. Recalculate late status
+            # 6. Recalculate late status
             if assignment.deadline and submission.submission_time:
                 submission.is_late = submission.submission_time > assignment.deadline
             else:
                 submission.is_late = False
 
-            # 6. Update compatibility fields based on status
+            # 7. Update compatibility fields based on status
             if status == 'completed':
                 submission.is_replied = True
                 submission.is_downloaded = True
@@ -206,10 +252,75 @@ class DatabaseOperations:
                 submission.is_downloaded = True
 
             self.session.commit()
-            return True
+            return submission.id
         except Exception as e:
             self.session.rollback()
             print(f"Error in update_submission_full: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def get_submission_by_id(self, submission_id: int) -> Optional[Submission]:
+        """Get submission by its database ID"""
+        return self.session.query(Submission).filter_by(id=submission_id).first()
+
+    def update_submission_field(self, submission_id: Optional[int], field_id: str, new_value: Any, email_uid: Optional[str] = None, message_id: Optional[str] = None) -> bool:
+        """Update a single field of a submission. No longer creates records automatically to prevent data corruption."""
+        try:
+            submission = None
+            if submission_id:
+                submission = self.session.query(Submission).filter_by(id=submission_id).first()
+            
+            if not submission and message_id:
+                submission = self.session.query(Submission).filter_by(message_id=message_id).first()
+
+            if not submission and email_uid:
+                submission = self.session.query(Submission).filter_by(email_uid=email_uid).first()
+
+            if not submission:
+                print(f"Error: Submission not found for update (id={submission_id}, uid={email_uid}, msgid={message_id})")
+                return False
+
+            if field_id == 'student_id':
+                current_name = submission.student.name if submission.student else "Unknown"
+                student = self.create_student(new_value, current_name)
+                submission.student_id = student.id
+            elif field_id == 'name':
+                if submission.student:
+                    submission.student.name = new_value
+                    self.session.add(submission.student)
+                else:
+                    student = self.create_student("Unknown", new_value)
+                    submission.student_id = student.id
+            elif field_id == 'assignment_name':
+                assignment = self.create_assignment(new_value)
+                submission.assignment_id = assignment.id
+                if assignment.deadline and submission.submission_time:
+                    submission.is_late = submission.submission_time > assignment.deadline
+                else:
+                    submission.is_late = False
+            elif field_id == 'status':
+                submission.status = new_value
+                if new_value == 'completed':
+                    submission.is_replied = True
+                    submission.is_downloaded = True
+                elif new_value == 'unreplied':
+                    submission.is_downloaded = True
+                elif new_value == 'pending':
+                    submission.is_downloaded = False
+                    submission.is_replied = False
+            elif field_id == 'message_id':
+                submission.message_id = new_value
+            elif field_id == 'body':
+                submission.body = new_value
+            
+            self.session.commit()
+            return True
+        except Exception as e:
+            self.session.rollback()
+            print(f"Error updating submission field: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def get_submission(self, student_id: str, assignment_name: str) -> Optional[Submission]:
@@ -237,13 +348,20 @@ class DatabaseOperations:
                 'is_replied': s.is_replied,
                 'local_path': s.local_path,
                 'status': s.status,
-                'error_message': s.error_message
+                'error_message': s.error_message,
+                'body': s.body
             })
         return result
 
     def get_submission_by_uid(self, email_uid: str) -> Optional[Submission]:
         """Get submission by email UID"""
         return self.session.query(Submission).filter_by(email_uid=email_uid).first()
+
+    def get_submission_by_message_id(self, message_id: str) -> Optional[Submission]:
+        """Get submission by Message-ID"""
+        if not message_id:
+            return None
+        return self.session.query(Submission).filter_by(message_id=message_id).first()
 
     def update_submission_local_path(self, submission_id: int, local_path: str) -> bool:
         """Update submission local path"""
@@ -395,7 +513,8 @@ class DatabaseOperations:
                 'is_replied': s.is_replied,
                 'local_path': s.local_path,
                 'status': s.status,
-                'error_message': s.error_message
+                'error_message': s.error_message,
+                'body': s.body
             })
         return result
 
@@ -483,7 +602,7 @@ class DatabaseOperations:
             json_data = json.dumps(body_data, ensure_ascii=False)
 
             cursor.execute(
-                "UPDATE submissions SET email_body = ? WHERE id = ?",
+                "UPDATE submissions SET body = ? WHERE id = ?",
                 (json_data, submission_id)
             )
 
@@ -513,7 +632,7 @@ class DatabaseOperations:
             cursor = conn.cursor()
 
             cursor.execute(
-                "SELECT email_body FROM submissions WHERE id = ?",
+                "SELECT body FROM submissions WHERE id = ?",
                 (submission_id,)
             )
 

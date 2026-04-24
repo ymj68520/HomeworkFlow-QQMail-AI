@@ -37,6 +37,7 @@ def init_database():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             student_id INTEGER NOT NULL,
             assignment_id INTEGER NOT NULL,
+            message_id VARCHAR(255) UNIQUE,
             email_uid VARCHAR(100) UNIQUE NOT NULL,
             email_subject TEXT,
             sender_email VARCHAR(100),
@@ -82,6 +83,7 @@ def init_database():
     # Create indexes
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_submissions_student ON submissions(student_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_submissions_assignment ON submissions(assignment_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_submissions_message_id ON submissions(message_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_submissions_late ON submissions(is_late)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_email_log_uid ON email_log(email_uid)')
 

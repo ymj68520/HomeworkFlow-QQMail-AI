@@ -1,7 +1,8 @@
 import enum
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Float
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, sessionmaker
+from sqlalchemy.orm import relationship, sessionmaker, scoped_session
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from datetime import datetime
 from config.settings import settings
 
@@ -40,13 +41,14 @@ class Submission(Base):
     __tablename__ = 'submissions'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    student_id = Column(Integer, ForeignKey('students.id'), nullable=True)
-    assignment_id = Column(Integer, ForeignKey('assignments.id'), nullable=True)
+    student_id = Column(Integer, ForeignKey('students.id'), nullable=False)
+    assignment_id = Column(Integer, ForeignKey('assignments.id'), nullable=False)
+    message_id = Column(String(255), unique=True, nullable=True, index=True)
     email_uid = Column(String(100), unique=True, nullable=False)
     email_subject = Column(Text)
     sender_email = Column(String(100))
     sender_name = Column(String(100))
-    email_body = Column(Text)
+    body = Column(Text)
     submission_time = Column(DateTime, nullable=False)
     is_late = Column(Boolean, default=False)
     is_downloaded = Column(Boolean, default=False)
@@ -103,10 +105,29 @@ class AIExtractionCache(Base):
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
-# Create engine and session
-engine = create_engine(f'sqlite:///{settings.DATABASE_PATH}')
+# Create engine and session (sync)
+engine = create_engine(
+    f'sqlite:///{settings.DATABASE_PATH}',
+    connect_args={"check_same_thread": False}
+)
 SessionLocal = sessionmaker(bind=engine)
+db_session = scoped_session(SessionLocal)
+
+# Create async engine and session
+async_engine = create_async_engine(
+    f'sqlite+aiosqlite:///{settings.DATABASE_PATH}',
+    connect_args={"check_same_thread": False}
+)
+AsyncSessionLocal = async_sessionmaker(
+    async_engine,
+    class_=AsyncSession,
+    expire_on_commit=False
+)
+
+def get_async_session():
+    """Get async database session factory"""
+    return AsyncSessionLocal
 
 def get_session():
     """Get database session"""
-    return SessionLocal()
+    return db_session()

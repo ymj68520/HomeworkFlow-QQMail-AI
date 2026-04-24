@@ -798,20 +798,29 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             # 4. 调用数据库更新
             from database.operations import db
             submission_id = self.current_data.get('id')
+            email_uid = self.current_data.get('email_uid')
+            email_subject = self.current_data.get('email_subject')
+            sender_email = self.current_data.get('email_from')
+            submission_time = self.current_data.get('submission_time') or self.current_data.get('received_time')
             
-            success = db.update_submission_full(
+            result = db.update_submission_full(
                 submission_id=submission_id,
                 student_id=new_student_id,
                 name=new_name,
                 assignment_name=new_assignment_name,
                 status=new_status_code,
-                email=new_email
+                email=new_email,
+                email_uid=email_uid,
+                email_subject=email_subject,
+                sender_email=sender_email,
+                submission_time=submission_time
             )
 
-            if success:
+            if result:
                 self._show_info("成功", "记录已成功更新")
                 
                 # 5. 更新本地缓存数据以刷新显示
+                self.current_data['id'] = result
                 self.current_data['student_id'] = new_student_id
                 self.current_data['name'] = new_name
                 self.current_data['email'] = new_email

@@ -1,56 +1,38 @@
-import customtkinter as ctk
-from tkinter import ttk, messagebox
-from typing import List, Dict, Any
+import sys
+import threading
+import asyncio
 from datetime import datetime
+from typing import List, Dict, Any, Optional
+
+from PySide6.QtWidgets import (
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, 
+    QApplication, QMessageBox, QHeaderView, QAbstractItemView
+)
+from PySide6.QtCore import Qt, QTimer, Signal
+
+from gui.components.sidebar import Sidebar
+from gui.components.data_table import DataTable
+from gui.components.drawer import Drawer
+from gui.components.batch_popup import BatchPopup
 from database.operations import db
 from database.models import db_session
-from config.settings import settings
-from gui.batch_edit_popup import BatchEditPopup
+from mail.target_folder_loader import target_folder_loader
+from mail.parser import mail_parser_inbox as mail_parser
+from mail.smtp_client import smtp_client
+from storage.manager import storage_manager
+from core.workflow import workflow
 
-class CollapsibleFrame(ctk.CTkFrame):
-    """可折叠的框架组件"""
-    def __init__(self, master, title, is_expanded=True, **kwargs):
-        super().__init__(master, **kwargs)
-        
-        self.is_expanded = is_expanded
-        self.title = title
-        
-        # 标题栏按钮
-        self.header_btn = ctk.CTkButton(
-            self, 
-            text=f"{'▼' if self.is_expanded else '▶'} {self.title}",
-            fg_color="transparent",
-            text_color=("gray10", "gray90"),
-            hover_color=("gray70", "gray30"),
-            anchor="w",
-            font=("Arial", 14, "bold"),
-            command=self.toggle
-        )
-        self.header_btn.pack(fill="x", padx=5, pady=2)
-        
-        # 内容区域
-        self.content_frame = ctk.CTkFrame(self, fg_color="transparent")
-        if self.is_expanded:
-            self.content_frame.pack(fill="x", padx=5, pady=5)
-
-    def toggle(self):
-        if self.is_expanded:
-            self.content_frame.pack_forget()
-            self.is_expanded = False
-            self.header_btn.configure(text=f"▶ {self.title}")
-        else:
-            self.content_frame.pack(fill="x", padx=5, pady=5)
-            self.is_expanded = True
-            self.header_btn.configure(text=f"▼ {self.title}")
-
-class MainWindow(ctk.CTk):
-    """主窗口"""
+class MainWindow(QMainWindow):
+    """主窗口 - PySide6 实现"""
+    
+    # 定义跨线程更新信号
+    update_drawer_signal = Signal(dict, str)
 
     def __init__(self):
         super().__init__()
 
-        self.title("QQ邮箱作业收发系统")
-        self.geometry("1400x900")
+        self.setWindowTitle("QQ邮箱作业收发系统")
+        self.resize(1400, 900)
 
         # 状态映射
         self.STATUS_MAP = {
@@ -61,331 +43,97 @@ class MainWindow(ctk.CTk):
             'completed': '已完成',
             'ignored': '已忽略'
         }
-        
-        self.STATUS_COLORS = {
-            'pending': '#FFA500',      # 橙色
-            'ai_error': '#FF4500',     # 橙红
-            'download_failed': '#FF0000', # 红色
-            'unreplied': '#1E90FF',    # 蓝色
-            'completed': '#32CD32',    # 绿色
-            'ignored': '#808080'       # 灰色
-        }
-
-        # 配置主题
-        ctk.set_appearance_mode("light")
-        ctk.set_default_color_theme("blue")
 
         # 数据
         self.all_submissions = []
         self.filtered_submissions = []
-        self.selected_items = []
-
+        
         # 分页状态
         self.current_page = 1
         self.per_page = 100
         self.total_pages = 1
         self.total_count = 0
 
-        # 复选框图像
-        self.checkbox_unchecked_img = None
-        self.checkbox_checked_img = None
-        self.create_checkbox_images()
-
-        # 复选框状态字典 {item_id: bool}
-        self.checked_items = {}
-
-        # 创建UI
+        # 初始化UI
         self.setup_ui()
+        
+        # 绑定信号
+        self.setup_connections()
 
         # 启动后台监听
         self.start_background_monitoring()
 
-        # 绑定ESC键关闭侧边栏
-        self.bind("<Escape>", lambda e: self._on_esc_key())
-
-        # 延迟加载数据（避免阻塞UI启动）
-        self.after(100, self.load_data)
-
-    def create_checkbox_images(self):
-        """创建复选框的 PIL PhotoImage 对象"""
-        try:
-            from PIL import Image, ImageDraw
-
-            # 图像尺寸
-            size = 20
-
-            # 创建未选中复选框 (☐)
-            unchecked = Image.new('RGBA', (size, size), (255, 255, 255, 0))
-            draw = ImageDraw.Draw(unchecked)
-            draw.rectangle([2, 2, size-3, size-3], outline='black', width=2)
-            self.checkbox_unchecked_img = ctk.CTkImage(unchecked, size=(size, size))
-
-            # 创建已选中复选框 (☑)
-            checked = Image.new('RGBA', (size, size), (255, 255, 255, 0))
-            draw = ImageDraw.Draw(checked)
-            draw.rectangle([2, 2, size-3, size-3], outline='black', width=2)
-            # 绘制勾选标记
-            draw.line([5, size//2, size//2-2, size-5], fill='black', width=2)
-            draw.line([size//2-2, size-5, size-3, 5], fill='black', width=2)
-            self.checkbox_checked_img = ctk.CTkImage(checked, size=(size, size))
-        except ImportError:
-            print("PIL not found, skipping checkbox images")
+        # 延迟加载数据
+        QTimer.singleShot(100, self.load_data)
 
     def setup_ui(self):
-        """创建UI组件"""
-        # 顶部标题栏
-        header = ctk.CTkFrame(self, height=80)
-        header.pack(fill="x", padx=10, pady=(10, 5))
+        """创建布局和组件"""
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.main_layout = QHBoxLayout(self.central_widget)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
 
-        title = ctk.CTkLabel(
-            header,
-            text="QQ邮箱作业收发系统",
-            font=("Arial", 28, "bold")
-        )
-        title.pack(pady=20)
+        # 左侧：侧边栏
+        self.sidebar = Sidebar()
+        self.main_layout.addWidget(self.sidebar)
 
-        # 主容器
-        main_container = ctk.CTkFrame(self)
-        main_container.pack(fill="both", expand=True, padx=10, pady=(5, 10))
-
-        # 左侧面板 - 筛选和控制
-        left_panel = ctk.CTkScrollableFrame(main_container, width=300, label_text="")
-        left_panel.pack(side="left", fill="y", padx=(0, 10))
-
-        self.create_left_panel(left_panel)
-
-        # 右侧面板 - 数据展示
-        right_panel = ctk.CTkFrame(main_container)
-        right_panel.pack(side="right", fill="both", expand=True)
-
-        self.create_right_panel(right_panel)
-
-    def create_left_panel(self, parent):
-        """创建左侧筛选面板（重构为可折叠滚动模式）"""
+        # 中央：数据表格
+        self.table = DataTable()
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.set_headers(["学号", "姓名", "作业", "收件时间", "提交时间", "状态", "本地路径"], stretch_column=6)
         
-        # 1. 筛选条件区块
-        self.filter_section = CollapsibleFrame(parent, title="筛选条件", is_expanded=True)
-        self.filter_section.pack(fill="x", padx=5, pady=5)
-        self._setup_filter_content(self.filter_section.content_frame)
-
-        # 2. 统计信息区块
-        self.stats_section = CollapsibleFrame(parent, title="统计信息", is_expanded=True)
-        self.stats_section.pack(fill="x", padx=5, pady=5)
-        self._setup_stats_content(self.stats_section.content_frame)
-
-        # 3. 批量操作区块
-        self.batch_section = CollapsibleFrame(parent, title="批量操作", is_expanded=True)
-        self.batch_section.pack(fill="x", padx=5, pady=5)
-        self._setup_batch_content(self.batch_section.content_frame)
-
-        # 状态栏保持在底部（注意：由于父容器现在是可滚动的，状态栏可能需要移出滚动区域或特殊处理）
-        self.status_label = ctk.CTkLabel(
-            self,  # 移出滚动区域，改绑到 self
-            text="状态: 就绪",
-            anchor="w"
-        )
-        self.status_label.pack(side="bottom", fill="x", padx=10, pady=10)
-
-    def _setup_filter_content(self, parent):
-        # 搜索框
-        search_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        search_frame.pack(fill="x", pady=5)
+        # 将表格放入垂直布局以支持工具栏或分页（如果需要）
+        center_container = QWidget()
+        center_layout = QVBoxLayout(center_container)
+        center_layout.setContentsMargins(20, 20, 20, 20)
+        center_layout.addWidget(self.table)
         
-        self.search_entry = ctk.CTkEntry(search_frame, placeholder_text="搜索学号/姓名...")
-        self.search_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        self.main_layout.addWidget(center_container)
+
+        # 右侧隐藏层：抽屉
+        self.drawer = Drawer(self)
+        self.drawer.hide()
+
+        # 状态栏
+        self.statusBar().showMessage("准备就绪")
+
+    def setup_connections(self):
+        """绑定信号与槽"""
+        # 搜索防抖
+        self.search_timer = QTimer()
+        self.search_timer.setSingleShot(True)
+        self.search_timer.setInterval(300)
+        self.search_timer.timeout.connect(self.on_search)
         
-        search_btn = ctk.CTkButton(search_frame, text="搜索", width=60, command=self.on_search)
-        search_btn.pack(side="right")
+        self.sidebar.search_input.textChanged.connect(lambda: self.search_timer.start())
 
-        # 筛选器
-        ctk.CTkLabel(parent, text="按学生筛选:").pack(anchor="w", pady=(10, 0))
-        self.student_var = ctk.StringVar(value="全部学生")
-        self.student_dropdown = ctk.CTkOptionMenu(
-            parent, 
-            values=["全部学生"],
-            variable=self.student_var,
-            command=self.on_filter_change
-        )
-        self.student_dropdown.pack(fill="x", pady=5)
+        # 过滤器
+        self.sidebar.student_filter.currentIndexChanged.connect(self.on_filter_change)
+        self.sidebar.assignment_filter.currentIndexChanged.connect(self.on_filter_change)
+        self.sidebar.status_filter.currentIndexChanged.connect(self.on_filter_change)
 
-        ctk.CTkLabel(parent, text="按作业筛选:").pack(anchor="w", pady=(10, 0))
-        self.assignment_var = ctk.StringVar(value="全部作业")
-        self.assignment_dropdown = ctk.CTkOptionMenu(
-            parent, 
-            values=["全部作业"],
-            variable=self.assignment_var,
-            command=self.on_filter_change
-        )
-        self.assignment_dropdown.pack(fill="x", pady=5)
-
-        ctk.CTkLabel(parent, text="按状态筛选:").pack(anchor="w", pady=(10, 0))
-        self.status_var = ctk.StringVar(value="全部状态")
-        status_options = ["全部状态", "正常", "逾期"] + list(self.STATUS_MAP.values())
-        self.status_dropdown = ctk.CTkOptionMenu(
-            parent, 
-            values=status_options,
-            variable=self.status_var,
-            command=self.on_filter_change
-        )
-        self.status_dropdown.pack(fill="x", pady=5)
-
-    def _setup_stats_content(self, parent):
-        self.stats_label = ctk.CTkLabel(
-            parent,
-            text="总提交: 0\n已下载: 0\n已回复: 0",
-            justify="left",
-            anchor="w"
-        )
-        self.stats_label.pack(fill="x", padx=5, pady=5)
-
-    def _setup_batch_content(self, parent):
-        self.selected_label = ctk.CTkLabel(parent, text="已选择: 0 项")
-        self.selected_label.pack(pady=5)
-
-        btns_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        btns_frame.pack(fill="x")
-        btns_frame.grid_columnconfigure((0, 1), weight=1)
-
-        # 第一行并排
-        ctk.CTkButton(btns_frame, text="批量下载", command=self.on_batch_download, width=130).grid(row=0, column=0, padx=2, pady=2)
-        ctk.CTkButton(btns_frame, text="批量回复", command=self.on_batch_reply, width=130).grid(row=0, column=1, padx=2, pady=2)
+        # 表格双击
+        self.table.rowDoubleClicked.connect(self.on_row_double_clicked)
         
-        # 第二行并排
-        ctk.CTkButton(btns_frame, text="批量删除", command=self.on_batch_delete, width=130).grid(row=1, column=0, padx=2, pady=2)
-        ctk.CTkButton(btns_frame, text="导出Excel", command=self.on_export_excel, width=130).grid(row=1, column=1, padx=2, pady=2)
-
-    def create_right_panel(self, parent):
-        """创建右侧数据展示面板"""
-        # 工具栏
-        toolbar = ctk.CTkFrame(parent, height=50)
-        toolbar.pack(fill="x", padx=10, pady=10)
-
-        # 刷新按钮
-        refresh_btn = ctk.CTkButton(
-            toolbar,
-            text="刷新数据",
-            command=self.load_data,
-            width=100
-        )
-        refresh_btn.pack(side="left", padx=5, pady=10)
-
-        # 全选按钮
-        select_all_btn = ctk.CTkButton(
-            toolbar,
-            text="全选",
-            command=self.on_select_all,
-            width=100
-        )
-        select_all_btn.pack(side="left", padx=5, pady=10)
-
-        # 清除选择按钮
-        clear_selection_btn = ctk.CTkButton(
-            toolbar,
-            text="清除选择",
-            command=self.on_clear_selection,
-            width=100
-        )
-        clear_selection_btn.pack(side="left", padx=5, pady=10)
-
-        # 数据表格
-        table_frame = ctk.CTkFrame(parent)
-        table_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-
-        # 创建Treeview
-        self.tree = ttk.Treeview(
-            table_frame,
-            show="headings",
-            selectmode="extended"
-        )
-
-        # 定义列
-        columns = ["select", "学号", "姓名", "作业", "收件时间", "提交时间", "状态", "本地路径"]
-        self.tree["columns"] = columns
-
-        # 配置列
-        self.tree.heading("select", text="✓")
-        self.tree.heading("学号", text="学号")
-        self.tree.heading("姓名", text="姓名")
-        self.tree.heading("作业", text="作业")
-        self.tree.heading("收件时间", text="收件时间")
-        self.tree.heading("提交时间", text="提交时间")
-        self.tree.heading("状态", text="状态")
-        self.tree.heading("本地路径", text="本地路径")
-
-        self.tree.column("select", width=40, anchor="center")
-        self.tree.column("学号", width=120, anchor="center")
-        self.tree.column("姓名", width=100, anchor="center")
-        self.tree.column("作业", width=100, anchor="center")
-        self.tree.column("收件时间", width=180, anchor="center")
-        self.tree.column("提交时间", width=180, anchor="center")
-        self.tree.column("状态", width=120, anchor="center")
-        self.tree.column("本地路径", width=300, anchor="w")
-
-        # 滚动条
-        scrollbar_y = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
-        scrollbar_x = ttk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
-
-        self.tree.configure(
-            yscrollcommand=scrollbar_y.set,
-            xscrollcommand=scrollbar_x.set
-        )
-
-        # 布局
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        scrollbar_y.grid(row=0, column=1, sticky="ns")
-        scrollbar_x.grid(row=1, column=0, sticky="ew")
-
-        table_frame.grid_rowconfigure(0, weight=1)
-        table_frame.grid_columnconfigure(0, weight=1)
-
-        # 绑定选择事件
-        self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
-
-        # 绑定点击事件用于复选框切换
-        self.tree.bind("<Button-1>", self.on_tree_click)
-
-        # 绑定双击事件用于打开预览
-        self.tree.bind("<Double-1>", self.on_tree_double_click)
-
-        # 绑定右键点击事件用于批量修改
-        self.tree.bind("<Button-3>", self.on_tree_right_click)
-
-        # 分页控件
-        pagination_frame = ctk.CTkFrame(parent)
-        pagination_frame.pack(fill="x", padx=10, pady=(5, 10))
-
-        self.page_label = ctk.CTkLabel(
-            pagination_frame,
-            text=f"第 {self.current_page}/{self.total_pages} 页 (共 {self.total_count} 条)"
-        )
-        self.page_label.pack(side="left", padx=5)
-
-        ctk.CTkButton(
-            pagination_frame,
-            text="上一页",
-            command=self.on_prev_page,
-            width=80
-        ).pack(side="left", padx=5)
-
-        ctk.CTkButton(
-            pagination_frame,
-            text="下一页",
-            command=self.on_next_page,
-            width=80
-        ).pack(side="left", padx=5)
-
-        # 邮件预览侧边栏
-        from gui.email_preview_drawer import EmailPreviewDrawer
-        self.preview_drawer = EmailPreviewDrawer(self)
+        # 跨线程 UI 更新信号连接
+        self.update_drawer_signal.connect(self.drawer.set_details)
+        
+        # 侧边栏按钮
+        self.sidebar.btn_download.clicked.connect(self.on_batch_download)
+        self.sidebar.btn_reply.clicked.connect(self.on_batch_reply)
+        self.sidebar.btn_delete.clicked.connect(self.on_batch_delete)
+        self.sidebar.btn_export.clicked.connect(self.on_export_excel)
+        
+        # 表格右键菜单
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.on_context_menu)
 
     def load_data(self, page: int = 1):
         """加载数据"""
         try:
-            self.status_label.configure(text="状态: 正在连接邮件服务器...")
-            self.update()
-
-            # 从TARGET_FOLDER获取数据
-            from mail.target_folder_loader import target_folder_loader
+            self.statusBar().showMessage("正在加载数据...")
+            
             result = target_folder_loader.get_from_target_folder(page, self.per_page)
 
             self.all_submissions = result['submissions']
@@ -398,47 +146,71 @@ class MainWindow(ctk.CTk):
             self.update_dropdowns()
             self.refresh_table()
             self.update_stats()
-            self.update_pagination()
-
-            self.status_label.configure(text=f"状态: 就绪（共{self.total_count}封邮件）")
+            
+            self.statusBar().showMessage(f"已加载 {len(self.all_submissions)} 条记录 (总计 {self.total_count})")
 
         except Exception as e:
-            messagebox.showerror("错误", f"加载数据失败: {str(e)}")
-            self.status_label.configure(text="状态: 错误")
+            QMessageBox.critical(self, "错误", f"加载数据失败: {str(e)}")
+            self.statusBar().showMessage("加载失败")
 
     def update_dropdowns(self):
         """更新下拉菜单选项"""
-        # 获取所有学生
+        self.sidebar.student_filter.blockSignals(True)
+        self.sidebar.assignment_filter.blockSignals(True)
+        self.sidebar.status_filter.blockSignals(True)
+
+        # 获取当前选中的值，以便刷新后尝试恢复
+        curr_student = self.sidebar.student_filter.currentText()
+        curr_assignment = self.sidebar.assignment_filter.currentText()
+        curr_status = self.sidebar.status_filter.currentText()
+
+        # 学生
         students = set()
         for sub in self.all_submissions:
             students.add(f"{sub['student_id']} - {sub['name']}")
-
-        student_list = ["全部学生"] + sorted(list(students))
-        self.student_dropdown.configure(values=student_list)
-
-        # 获取所有作业
+        
+        self.sidebar.student_filter.clear()
+        self.sidebar.student_filter.addItem("全部学生")
+        self.sidebar.student_filter.addItems(sorted(list(students)))
+        
+        # 作业
         assignments = set()
         for sub in self.all_submissions:
             assignments.add(sub['assignment_name'])
+        
+        self.sidebar.assignment_filter.clear()
+        self.sidebar.assignment_filter.addItem("全部作业")
+        self.sidebar.assignment_filter.addItems(sorted(list(assignments)))
 
-        assignment_list = ["全部作业"] + sorted(list(assignments))
-        self.assignment_dropdown.configure(values=assignment_list)
+        # 状态
+        status_options = ["全部状态", "正常", "逾期"] + list(self.STATUS_MAP.values())
+        self.sidebar.status_filter.clear()
+        self.sidebar.status_filter.addItems(status_options)
+
+        # 恢复选择
+        idx = self.sidebar.student_filter.findText(curr_student)
+        if idx >= 0: self.sidebar.student_filter.setCurrentIndex(idx)
+        
+        idx = self.sidebar.assignment_filter.findText(curr_assignment)
+        if idx >= 0: self.sidebar.assignment_filter.setCurrentIndex(idx)
+        
+        idx = self.sidebar.status_filter.findText(curr_status)
+        if idx >= 0: self.sidebar.status_filter.setCurrentIndex(idx)
+
+        self.sidebar.student_filter.blockSignals(False)
+        self.sidebar.assignment_filter.blockSignals(False)
+        self.sidebar.status_filter.blockSignals(False)
 
     def refresh_table(self):
         """刷新表格数据"""
-        # 清空表格
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-
-        # 填充数据
+        self.table.clear_data()
+        
         for sub in self.filtered_submissions:
             status_code = sub.get('status', 'pending')
             status_text = self.STATUS_MAP.get(status_code, '未知')
             
             if sub.get('is_late'):
                 status_text += " (逾期)"
-                
-            checkbox_symbol = "☐"
 
             # 格式化收件时间
             received_time = sub.get('received_time')
@@ -450,22 +222,16 @@ class MainWindow(ctk.CTk):
             else:
                 received_str = "未知"
 
-            values = [
-                checkbox_symbol,
-                sub['student_id'],
-                sub['name'],
-                sub['assignment_name'],
-                received_str,
-                sub['submission_time'].strftime('%Y-%m-%d %H:%M:%S'),
-                status_text,
-                sub['local_path'] or "未下载"
-            ]
-
-            item_id = self.tree.insert("", "end", values=values)
-
-            # 设置颜色标签
-            self.tree.tag_configure(status_code, foreground=self.STATUS_COLORS.get(status_code, "black"))
-            self.tree.item(item_id, tags=(status_code,))
+            row_data = {
+                "学号": sub['student_id'],
+                "姓名": sub['name'],
+                "作业": sub['assignment_name'],
+                "收件时间": received_str,
+                "提交时间": sub['submission_time'].strftime('%Y-%m-%d %H:%M:%S'),
+                "状态": status_text,
+                "本地路径": sub['local_path'] or "未下载"
+            }
+            self.table.add_row(row_data)
 
     def update_stats(self):
         """更新统计信息"""
@@ -473,29 +239,27 @@ class MainWindow(ctk.CTk):
         downloaded = sum(1 for sub in self.all_submissions if sub.get('status') in ['unreplied', 'completed'])
         replied = sum(1 for sub in self.all_submissions if sub.get('status') == 'completed')
 
-        self.stats_label.configure(
-            text=f"总提交: {total}\n已下载: {downloaded}\n已回复: {replied}"
-        )
+        self.sidebar.total_card.value_label.setText(str(total))
+        self.sidebar.downloaded_card.value_label.setText(str(downloaded))
 
     def on_search(self):
-        """搜索"""
-        query = self.search_entry.get().strip()
+        """搜索逻辑"""
+        query = self.sidebar.search_input.text().strip()
 
         if not query:
-            self.filtered_submissions = self.all_submissions.copy()
+            self.on_filter_change() # 重新应用当前过滤器
         else:
             self.filtered_submissions = [
                 sub for sub in self.all_submissions
                 if query in str(sub['student_id']) or query in str(sub['name'])
             ]
+            self.refresh_table()
 
-        self.refresh_table()
-
-    def on_filter_change(self, value):
-        """筛选条件改变"""
-        student_filter = self.student_var.get()
-        assignment_filter = self.assignment_var.get()
-        status_filter = self.status_var.get()
+    def on_filter_change(self):
+        """筛选逻辑"""
+        student_filter = self.sidebar.student_filter.currentText()
+        assignment_filter = self.sidebar.assignment_filter.currentText()
+        status_filter = self.sidebar.status_filter.currentText()
 
         self.filtered_submissions = self.all_submissions.copy()
 
@@ -526,7 +290,6 @@ class MainWindow(ctk.CTk):
                 if sub['is_late']
             ]
         elif status_filter != "全部状态":
-            # 查找对应的 code
             target_code = None
             for code, text in self.STATUS_MAP.items():
                 if text == status_filter:
@@ -541,100 +304,115 @@ class MainWindow(ctk.CTk):
 
         self.refresh_table()
 
-    def on_tree_click(self, event) -> None:
-        """处理 Treeview 点击事件"""
-        region = self.tree.identify("region", event.x, event.y)
+    def on_row_double_clicked(self, row_data):
+        """处理行双击：展示抽屉"""
+        # 寻找对应的原始数据
+        submission = None
+        for sub in self.all_submissions:
+            if str(sub['student_id']) == str(row_data.get('学号')) and \
+               sub['assignment_name'] == row_data.get('作业'):
+                submission = sub
+                break
         
-        # 如果点击的不是单元格区域，且侧边栏可见且未固定，则隐藏侧边栏
-        if region != "cell":
-            if hasattr(self, 'preview_drawer') and self.preview_drawer.is_visible and not self.preview_drawer.is_pinned:
-                self.preview_drawer.hide()
+        if submission:
+            details = {
+                "学号": submission['student_id'],
+                "姓名": submission['name'],
+                "作业": submission['assignment_name'],
+                "收件时间": row_data.get('收件时间'),
+                "提交时间": row_data.get('提交时间'),
+                "状态": row_data.get('状态'),
+                "本地路径": submission['local_path'] or "未下载"
+            }
+            
+            # 检查是否有缓存的正文
+            body = submission.get('body')
+            if not body:
+                # 尝试从数据库加载（如果之前保存过）
+                if submission.get('id'):
+                    db_sub = db.get_submission_by_id(submission['id'])
+                    if db_sub and hasattr(db_sub, 'body') and db_sub.body:
+                        body = db_sub.body
+                        submission['body'] = body
+
+            # 如果还是没有，异步拉取
+            if not body:
+                self.drawer.set_details(details, "正在从服务器拉取正文...")
+                self.drawer.open_drawer()
+                # 启动线程拉取
+                threading.Thread(
+                    target=self.fetch_email_body, 
+                    args=(submission, details), 
+                    daemon=True
+                ).start()
+            else:
+                self.drawer.set_details(details, body)
+                self.drawer.open_drawer()
+
+    def fetch_email_body(self, submission, details):
+        """后台拉取邮件正文"""
+        try:
+            from mail.parser import mail_parser_target
+            if mail_parser_target.connect():
+                email_data = mail_parser_target.parse_email(submission['email_uid'])
+                if email_data and 'email_body' in email_data:
+                    body_dict = email_data['email_body']
+                    body = body_dict.get('plain_text') or body_dict.get('html_markdown') or "邮件内容为空"
+                    
+                    # 更新缓存
+                    submission['body'] = body
+                    
+                    # 如果数据库支持，也可以存入数据库
+                    if submission.get('id'):
+                        try:
+                            db.update_submission_field(submission['id'], 'body', body)
+                        except: pass
+                    
+                    # 发送信号回到主线程更新 UI
+                    self.update_drawer_signal.emit(details, body)
+
+                mail_parser_target.disconnect()
+        except Exception as e:
+            print(f"Error fetching email body: {e}")
+            self.update_drawer_signal.emit(details, f"拉取正文失败: {str(e)}")
+
+    def on_context_menu(self, pos):
+        """显示右键菜单以进行批量修改"""
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
             return
 
-    def on_tree_double_click(self, event) -> None:
-        """处理表格双击事件"""
-        try:
-            region = self.tree.identify("region", event.x, event.y)
-            if region != "cell":
-                return
-
-            item = self.tree.identify_row(event.y)
-            if not item:
-                return
-
-            index = self.tree.index(item)
-            if 0 <= index < len(self.filtered_submissions):
-                submission_data = self.filtered_submissions[index]
-                self.preview_drawer.show(submission_data)
-
-        except Exception as e:
-            messagebox.showerror("预览错误", f"无法打开邮件预览：\n{str(e)}")
-
-    def on_tree_select(self, event):
-        """表格选择事件：同步勾选符号和计数"""
-        selected_items = self.tree.selection()
-        selected_set = set(selected_items)
-        
-        # 同步视觉符号
-        for item_id in self.tree.get_children():
-            is_selected = item_id in selected_set
-            current_symbol = self.tree.set(item_id, "select")
-            new_symbol = "☑" if is_selected else "☐"
-            
-            # 仅在符号改变时更新，优化性能
-            if current_symbol != new_symbol:
-                self.tree.set(item_id, "select", new_symbol)
-        
-        # 更新计数
-        count = len(selected_items)
-        self.selected_label.configure(text=f"已选择: {count} 项")
-
-    def on_tree_right_click(self, event):
-        """处理右键点击：显示批量修改弹出层"""
-        selected_items = self.tree.selection()
-        if not selected_items:
-            # 如果没有选中，可以尝试选中鼠标下的那一行
-            item = self.tree.identify_row(event.y)
-            if item:
-                self.tree.selection_set(item)
-                selected_items = (item,)
-            else:
-                return
-
-        # 获取选中的提交数据
         submissions = []
-        for item_id in selected_items:
-            index = self.tree.index(item_id)
-            if 0 <= index < len(self.filtered_submissions):
-                submissions.append(self.filtered_submissions[index])
-
+        for index in selected_rows:
+            row = index.row()
+            # 获取学号和作业名作为标识
+            student_id = self.table.item(row, 0).text()
+            assignment_name = self.table.item(row, 2).text()
+            
+            for sub in self.all_submissions:
+                if str(sub['student_id']) == student_id and sub['assignment_name'] == assignment_name:
+                    submissions.append(sub)
+                    break
+        
         if submissions:
-            # 显示弹出层
-            popup = BatchEditPopup(
-                self, 
-                submissions, 
-                on_update=lambda f, v: self.handle_batch_update(submissions, f, v)
-            )
+            popup = BatchPopup(self, submissions, on_update=lambda f, v: self.handle_batch_update(submissions, f, v))
+            popup.exec()
 
     def handle_batch_update(self, submissions: List[Dict], field_id: str, new_value: Any):
-        """处理批量更新逻辑"""
+        """批量更新业务逻辑"""
         success_count = 0
         last_error = None
         
-        # 如果是状态修改，需要将显示文本转回 code
+        # 状态转换
         if field_id == 'status':
-            target_code = None
             for code, text in self.STATUS_MAP.items():
                 if text == new_value:
-                    target_code = code
+                    new_value = code
                     break
-            if target_code:
-                new_value = target_code
 
         try:
             for sub in submissions:
                 try:
-                    # 传入 id, email_uid 和 message_id 以确保即使 DB 中没有记录也能根据标识符定位或创建
                     if db.update_submission_field(
                         sub.get('id'), 
                         field_id, 
@@ -643,73 +421,44 @@ class MainWindow(ctk.CTk):
                         message_id=sub.get('message_id')
                     ):
                         success_count += 1
-                    else:
-                        last_error = f"ID:{sub.get('id')} 更新返回失败"
                 except Exception as e:
                     last_error = str(e)
             
             if success_count > 0:
-                messagebox.showinfo("成功", f"成功修改 {success_count}/{len(submissions)} 条记录")
+                QMessageBox.information(self, "成功", f"已更新 {success_count}/{len(submissions)} 条记录")
                 self.load_data(self.current_page)
             else:
-                messagebox.showerror("错误", f"修改失败。\n原因: {last_error or '未知错误'}\n请检查日志获取详细堆栈。")
-        except Exception as e:
-            messagebox.showerror("严重错误", f"批量处理过程中发生异常: {str(e)}")
+                QMessageBox.warning(self, "失败", f"更新失败: {last_error or '未知错误'}")
         finally:
             db_session.remove()
 
-    def on_select_all(self):
-        """全选"""
-        all_items = self.tree.get_children()
-        self.tree.selection_set(all_items)
-
-    def on_clear_selection(self):
-        """清除选择"""
-        self.tree.selection_remove(self.tree.selection())
-
-    def get_checked_submissions(self) -> List[dict]:
-        """获取所有选中的记录"""
-        selected_items = self.tree.selection()
-        result = []
-        for item_id in selected_items:
-            index = self.tree.index(item_id)
-            if 0 <= index < len(self.filtered_submissions):
-                result.append(self.filtered_submissions[index])
-        return result
-
     def on_batch_download(self):
         """批量下载附件"""
-        submissions = self.get_checked_submissions()
+        submissions = self.get_selected_submissions()
         if not submissions:
-            messagebox.showwarning("提示", "请先选择要下载的记录")
+            QMessageBox.information(self, "提示", "请先选择要下载的记录")
             return
 
-        result = messagebox.askyesno("确认批量下载", f"确定要下载 {len(submissions)} 条记录的附件吗？")
-        if not result: return
+        if QMessageBox.question(self, "确认", f"确定要下载 {len(submissions)} 条附件吗？") != QMessageBox.Yes:
+            return
 
-        self.configure(cursor="watch")
-        self.update()
-        
+        QApplication.setOverrideCursor(Qt.WaitCursor)
         success_count = 0
-        failed_count = 0
         
         try:
-            from mail.parser import mail_parser_inbox as mail_parser
             if not mail_parser.connect():
-                messagebox.showerror("错误", "无法连接到邮件服务器")
+                QMessageBox.critical(self, "错误", "无法连接邮件服务器")
                 return
 
             for idx, sub in enumerate(submissions):
+                self.statusBar().showMessage(f"正在下载 ({idx+1}/{len(submissions)}): {sub['name']}")
+                QApplication.processEvents()
+                
                 try:
-                    self.status_label.configure(text=f"状态: 正在下载 {idx+1}/{len(submissions)}...")
-                    self.update()
-
                     email_data = mail_parser.parse_email(sub['email_uid'])
                     if not email_data or not email_data.get('attachments'):
-                        failed_count += 1
                         continue
 
-                    from storage.manager import storage_manager
                     local_path = storage_manager.store_submission(
                         assignment_name=sub['assignment_name'],
                         student_id=sub['student_id'],
@@ -719,91 +468,108 @@ class MainWindow(ctk.CTk):
 
                     if local_path:
                         db.update_submission_local_path(sub['id'], local_path)
-                        # 如果是已回复，则状态变为 completed，否则为 unreplied
                         new_status = 'completed' if sub.get('is_replied') else 'unreplied'
                         db.update_submission_status(sub['id'], new_status)
                         success_count += 1
-                    else:
-                        db.update_submission_status(sub['id'], 'download_failed')
-                        failed_count += 1
                 except:
-                    failed_count += 1
+                    pass
 
-            self.load_data()
-            messagebox.showinfo("结果", f"下载完成！成功: {success_count}, 失败: {failed_count}")
+            self.load_data(self.current_page)
+            QMessageBox.information(self, "完成", f"下载完成！成功: {success_count}/{len(submissions)}")
             mail_parser.disconnect()
         finally:
-            self.configure(cursor="")
-            self.status_label.configure(text="状态: 就绪")
+            QApplication.restoreOverrideCursor()
+            self.statusBar().showMessage("准备就绪")
 
     def on_batch_reply(self):
-        """批量回复"""
-        submissions = self.get_checked_submissions()
+        """批量回复邮件"""
+        submissions = self.get_selected_submissions()
         unreplied = [s for s in submissions if s.get('status') == 'unreplied']
         if not unreplied:
-            messagebox.showinfo("提示", "没有符合条件的（已下载且未回复）记录")
+            QMessageBox.information(self, "提示", "没有符合条件的（已下载且未回复）记录")
             return
 
-        if not messagebox.askyesno("确认", f"确定要回复 {len(unreplied)} 条记录吗？"): return
+        if QMessageBox.question(self, "确认", f"确定要回复 {len(unreplied)} 条记录吗？") != QMessageBox.Yes:
+            return
 
-        self.configure(cursor="watch")
-        self.update()
-        
+        QApplication.setOverrideCursor(Qt.WaitCursor)
         success_count = 0
-        from mail.smtp_client import smtp_client
         for s in unreplied:
             if smtp_client.send_reply(s['email'], s['name'], s['assignment_name']):
                 db.mark_replied(s['id'])
                 db.update_submission_status(s['id'], 'completed')
                 success_count += 1
         
-        self.load_data()
-        messagebox.showinfo("结果", f"回复完成！成功: {success_count}")
-        self.configure(cursor="")
+        self.load_data(self.current_page)
+        QMessageBox.information(self, "完成", f"回复完成！成功: {success_count}/{len(unreplied)}")
+        QApplication.restoreOverrideCursor()
 
     def on_batch_delete(self):
-        """批量删除"""
-        submissions = self.get_checked_submissions()
+        """批量删除记录"""
+        submissions = self.get_selected_submissions()
         if not submissions: return
-        if not messagebox.askyesno("确认", f"确定删除这 {len(submissions)} 条记录吗？\n注意：这会将对应的邮件移动回INBOX。"): return
-
-        from core.workflow import workflow
         
+        if QMessageBox.question(self, "确认", f"确定删除这 {len(submissions)} 条记录吗？\n邮件将移回收件箱。") != QMessageBox.Yes:
+            return
+
         success_count = 0
         for s in submissions:
             if workflow.delete_submission(s['id']):
                 success_count += 1
         
-        self.load_data()
-        messagebox.showinfo("结果", f"删除完成！成功: {success_count}/{len(submissions)}")
+        self.load_data(self.current_page)
+        QMessageBox.information(self, "完成", f"删除完成！成功: {success_count}/{len(submissions)}")
 
     def on_export_excel(self):
-        messagebox.showinfo("提示", "导出Excel功能待实现")
+        """导出 Excel 占位符"""
+        QMessageBox.information(self, "提示", "导出 Excel 功能待实现")
 
-    def update_pagination(self):
-        self.page_label.configure(text=f"第 {self.current_page}/{self.total_pages} 页 (共 {self.total_count} 条)")
-
-    def on_prev_page(self):
-        if self.current_page > 1: self.load_data(self.current_page - 1)
-
-    def on_next_page(self):
-        if self.current_page < self.total_pages: self.load_data(self.current_page + 1)
+    def get_selected_submissions(self) -> List[dict]:
+        """从表格选择中获取数据对象"""
+        selected_rows = self.table.selectionModel().selectedRows()
+        result = []
+        for index in selected_rows:
+            row = index.row()
+            student_id = self.table.item(row, 0).text()
+            assignment_name = self.table.item(row, 2).text()
+            for sub in self.all_submissions:
+                if str(sub['student_id']) == student_id and sub['assignment_name'] == assignment_name:
+                    result.append(sub)
+                    break
+        return result
 
     def start_background_monitoring(self):
-        import threading, asyncio
+        """后台异步监控邮件"""
         def run_monitoring():
-            from core.workflow import workflow
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            try: loop.run_until_complete(workflow.monitor_inbox(interval=60))
-            except: pass
-            finally: loop.close()
-        threading.Thread(target=run_monitoring, daemon=True).start()
+            try:
+                loop.run_until_complete(workflow.monitor_inbox(interval=60))
+            except:
+                pass
+            finally:
+                loop.close()
+        
+        thread = threading.Thread(target=run_monitoring, daemon=True)
+        thread.start()
 
-    def _on_esc_key(self):
-        if hasattr(self, 'preview_drawer') and self.preview_drawer.is_visible:
-            self.preview_drawer.hide()
+    def resizeEvent(self, event):
+        """处理窗口大小变化以同步抽屉高度"""
+        super().resizeEvent(event)
+        if self.drawer.isVisible():
+            self.drawer.setFixedHeight(self.height())
+            self.drawer.move(self.width() - self.drawer.width(), 0)
 
 if __name__ == '__main__':
-    app = MainWindow()
-    app.mainloop()
+    app = QApplication(sys.argv)
+    
+    # 加载样式
+    try:
+        with open("gui/styles/theme.qss", "r", encoding="utf-8") as f:
+            app.setStyleSheet(f.read())
+    except Exception as e:
+        print(f"Warning: Could not load theme.qss: {e}")
+
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())

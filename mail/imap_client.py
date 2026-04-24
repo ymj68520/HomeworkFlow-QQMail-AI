@@ -22,6 +22,7 @@ class IMAPClient:
             self.connection = imaplib.IMAP4_SSL(self.host, self.port, ssl_context=context)
 
             self.connection.login(self.email, self.password)
+            self.current_folder = None # 重连后重置文件夹状态，强制重新选择
             print(f"Connected to QQ email: {self.email}")
             return True
 
@@ -207,6 +208,7 @@ class IMAPClient:
             # 提取邮件信息
             email_data = {
                 'uid': email_uid,
+                'message_id': self.decode_header(email_message['Message-ID']),
                 'subject': self.decode_header(email_message['Subject']),
                 'from': self.decode_header(email_message['From']),
                 'to': self.decode_header(email_message['To']),
@@ -451,6 +453,7 @@ class IMAPClient:
                         # 提取基本信息
                         email_data = {
                             'uid': uid,
+                            'message_id': self.decode_header(msg.get('Message-ID', '')),
                             'subject': self.decode_header(msg.get('Subject', '')),
                             'from': msg.get('From', ''),
                             'to': msg.get('To', ''),

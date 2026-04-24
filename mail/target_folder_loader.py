@@ -83,17 +83,27 @@ class TargetFolderLoader:
             Dict containing merged info
         """
         uid = email_data.get('uid')
+        msg_id = email_data.get('message_id')
 
         # 1. 从邮件获取基本信息
         email_info = {
             'email_uid': uid,
+            'message_id': msg_id,
             'email_subject': email_data.get('subject', ''),
             'email_from': email_data.get('from', ''),
             'received_time': self._parse_date(email_data.get('date')),
         }
 
         # 2. 从数据库获取元数据
-        db_record = db.get_submission_by_uid(uid)
+        db_record = None
+        if msg_id:
+            db_record = db.get_submission_by_message_id(msg_id)
+        
+        if not db_record:
+            db_record = db.get_submission_by_uid(uid)
+            if db_record and msg_id:
+                db.update_submission_field(db_record.id, 'message_id', msg_id)
+
         if db_record:
             db_info = {
                 'id': db_record.id,
@@ -168,19 +178,63 @@ class TargetFolderLoader:
         return submissions
 
     async def _merge_submission_info_async(self, email_data) -> Dict:
-        """异步版本的多源数据合并"""
+        """异步版本的多源数据合并 - 增加基于内容的自动修复逻辑"""
         uid = email_data.get('uid')
+        msg_id = email_data.get('message_id')
 
         # 1. 从邮件获取基本信息
         email_info = {
             'email_uid': uid,
+            'message_id': msg_id,
             'email_subject': email_data.get('subject', ''),
             'email_from': email_data.get('from', ''),
             'received_time': self._parse_date(email_data.get('date')),
         }
 
         # 2. 从数据库获取元数据
-        db_record = db.get_submission_by_uid(uid)
+        db_record = None
+        
+        # --- 策略 1: 强标识符匹配 ---
+        if msg_id:
+            db_record = db.get_submission_by_message_id(msg_id)
+            
+        if not db_record:
+            db_record = db.get_submission_by_uid(uid)
+
+        # --- 策略 2: 基于内容识别的自动修复 (针对移动后丢失关联的邮件) ---
+        ai_info = None
+        if not db_record:
+            # 只有在完全匹配不到数据库记录时，才尝试按内容检索
+            ai_info = await self._extract_from_email(email_data)
+            student_id = ai_info.get('student_id')
+            assignment_name = ai_info.get('assignment_name')
+            
+            if student_id and student_id != 'Unknown' and assignment_name and assignment_name != 'Unknown':
+                # A. 尝试寻找已有的旧记录进行链接
+                db_record = db.get_submission(student_id, assignment_name)
+                
+                if db_record:
+                    # 发现已有关联记录，立即修复其标识符
+                    print(f"[REPAIR] Linked email {uid} to existing record {db_record.id} via content match ({student_id})")
+                    db.update_submission_field(db_record.id, 'email_uid', uid)
+                    if msg_id:
+                        db.update_submission_field(db_record.id, 'message_id', msg_id)
+                else:
+                    # B. 数据库确实没有记录，执行“自动入库索引”
+                    print(f"[INDEX] Auto-creating missing database record for email {uid} ({student_id})")
+                    db_record = db.create_submission(
+                        email_uid=uid,
+                        message_id=msg_id,
+                        email_subject=email_info['email_subject'],
+                        sender_email=email_info['email_from'],
+                        sender_name=ai_info.get('name', 'Unknown'),
+                        submission_time=email_info['received_time'],
+                        student_id=student_id,
+                        assignment_name=assignment_name,
+                        status='completed' # 已在处理文件夹中的邮件默认设为已完成
+                    )
+
+        # 3. 组织返回信息
         if db_record:
             db_info = {
                 'id': db_record.id,
@@ -197,12 +251,17 @@ class TargetFolderLoader:
                 'error_message': getattr(db_record, 'error_message', None),
             }
         else:
-            # 数据库中没有记录，使用AI提取
-            db_info = await self._extract_from_email(email_data)
+            # 数据库中确实没有记录且无法匹配，使用刚刚提取的 AI 信息
+            db_info = ai_info if ai_info else await self._extract_from_email(email_data)
+            db_info['id'] = None
             db_info['status'] = 'pending'
             db_info['error_message'] = None
 
-        # 3. 从本地文件系统获取附件信息
+        # 4. 从本地文件系统获取附件信息
+        attachments = self._get_local_attachments(db_info.get('local_path'))
+
+        # 合并所有信息
+        return {**email_info, **db_info, 'attachments': attachments}
         attachments = self._get_local_attachments(db_info.get('local_path'))
 
         # 合并所有信息
