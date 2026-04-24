@@ -118,3 +118,58 @@ async def test_batch_retry_unknown_multiple_emails():
         assert result[1]['student_id'] == '2021002'
     finally:
         extractor.client = original_client
+
+
+@pytest.mark.asyncio
+async def test_batch_retry_unknown_large_batch_splitting():
+    """Test that batches larger than 20 are split into multiple API calls"""
+    # Create 25 emails (should split into 2 batches: 20 + 5)
+    email_list = [
+        {
+            'uid': f'{10000+i}',
+            'subject': f'202100{i}学生{i}-作业1',
+            'from': f'学生{i} <student{i}@example.com>',
+            'attachments': [{'filename': 'file.pdf', 'content': b''}],
+            'previous_result': {'student_id': None, 'name': None, 'assignment_name': None}
+        }
+        for i in range(25)
+    ]
+
+    extractor = AIExtractor()
+    original_client = extractor.client
+
+    # Track how many times the API is called
+    call_count = [0]
+
+    async def mock_create(*args, **kwargs):
+        call_count[0] += 1
+        batch_size = 20 if call_count[0] == 1 else 5
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+
+        results = [
+            {
+                'is_assignment': True,
+                'student_id': f'202100{i}',
+                'name': f'学生{i}',
+                'assignment_name': '作业1',
+                'confidence': 0.8,
+                'reasoning': 'Extracted'
+            }
+            for i in range(batch_size)
+        ]
+
+        mock_response.choices[0].message.content = json.dumps(results)
+        return mock_response
+
+    extractor.client = MagicMock()
+    extractor.client.chat.completions.create = AsyncMock(side_effect=mock_create)
+
+    try:
+        result = await extractor.batch_retry_unknown(email_list)
+
+        assert len(result) == 25
+        assert call_count[0] == 2  # Should have made 2 API calls
+    finally:
+        extractor.client = original_client
