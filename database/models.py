@@ -37,6 +37,7 @@ class Submission(Base):
     email_subject = Column(Text)
     sender_email = Column(String(100))
     sender_name = Column(String(100))
+    email_body = Column(Text)
     submission_time = Column(DateTime, nullable=False)
     is_late = Column(Boolean, default=False)
     is_downloaded = Column(Boolean, default=False)

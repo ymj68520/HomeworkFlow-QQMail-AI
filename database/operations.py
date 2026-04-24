@@ -358,7 +358,16 @@ class DatabaseOperations:
 
         Returns:
             True on success, False on exception
+
+        Raises:
+            ValueError: If body_data missing required keys
         """
+        # Validate required keys
+        required_keys = {'plain_text', 'html_markdown', 'format'}
+        if not all(key in body_data for key in required_keys):
+            raise ValueError(f"body_data must contain keys: {required_keys}")
+
+        conn = None
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
@@ -372,12 +381,14 @@ class DatabaseOperations:
             )
 
             conn.commit()
-            conn.close()
             return True
 
         except Exception as e:
             print(f"Error saving email body: {e}")
             return False
+        finally:
+            if conn:
+                conn.close()
 
     def get_email_body(self, submission_id: int) -> Optional[Dict]:
         """Get email body data from submission
@@ -389,6 +400,7 @@ class DatabaseOperations:
             Dict with keys: plain_text, html_markdown, format
             None if not found or on exception
         """
+        conn = None
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
@@ -399,7 +411,6 @@ class DatabaseOperations:
             )
 
             result = cursor.fetchone()
-            conn.close()
 
             if result and result[0]:
                 return json.loads(result[0])
@@ -408,6 +419,9 @@ class DatabaseOperations:
         except Exception as e:
             print(f"Error getting email body: {e}")
             return None
+        finally:
+            if conn:
+                conn.close()
 
     def close(self):
         """Close database session"""
