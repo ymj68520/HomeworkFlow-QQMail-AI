@@ -24,7 +24,7 @@ class CollapsibleFrame(ctk.CTkFrame):
             font=("Arial", 14, "bold"),
             command=self.toggle
         )
-        self.header_btn.pack(fill="x", padx=2, pady=2)
+        self.header_btn.pack(fill="x", padx=5, pady=2)
         
         # 内容区域
         self.content_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -167,7 +167,7 @@ class MainWindow(ctk.CTk):
         self._setup_filter_content(self.filter_section.content_frame)
 
         # 2. 统计信息区块
-        self.stats_section = CollapsibleFrame(parent, title="统计信息", is_expanded=False)
+        self.stats_section = CollapsibleFrame(parent, title="统计信息", is_expanded=True)
         self.stats_section.pack(fill="x", padx=5, pady=5)
         self._setup_stats_content(self.stats_section.content_frame)
 
@@ -242,6 +242,7 @@ class MainWindow(ctk.CTk):
 
         btns_frame = ctk.CTkFrame(parent, fg_color="transparent")
         btns_frame.pack(fill="x")
+        btns_frame.grid_columnconfigure((0, 1), weight=1)
 
         # 第一行并排
         ctk.CTkButton(btns_frame, text="批量下载", command=self.on_batch_download, width=130).grid(row=0, column=0, padx=2, pady=2)
