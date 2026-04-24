@@ -4,12 +4,34 @@ from typing import Optional, Dict
 from mail.parser import mail_parser_inbox as mail_parser, mail_parser_target
 from ai.extractor import ai_extractor
 from database.operations import db
+from database.async_operations import async_db
 from storage.manager import storage_manager
 from mail.imap_client import imap_client_inbox
 from mail.smtp_client import smtp_client
-from core.deduplication import deduplication_handler
+from core.deduplication.service import DeduplicationService
+from core.transactions.file_operations import TransactionalFileOperation
 from config.settings import settings
 from database.models import SubmissionStatus, Submission
+
+# 兼容层：旧的 deduplication_handler 现在委托给新服务
+class DeduplicationHandlerCompat:
+    """兼容层包装器"""
+    def __init__(self, db):
+        self._service = DeduplicationService(db)
+
+    async def check_and_handle_duplicate(self, *args, **kwargs):
+        """兼容旧接口"""
+        # 返回 (is_duplicate, result_dict) 格式
+        student_id = kwargs.get('student_id', args[1] if len(args) > 1 else None)
+        assignment_name = kwargs.get('assignment_name', args[2] if len(args) > 2 else None)
+
+        if student_id and assignment_name:
+            result = await self._service.check_submission(student_id, assignment_name)
+            return result.is_duplicate, {'success': True, 'result': result}
+        return False, None
+
+# 创建兼容实例
+deduplication_handler = DeduplicationHandlerCompat(db)
 
 class AssignmentWorkflow:
     """作业处理主流程"""
@@ -18,10 +40,12 @@ class AssignmentWorkflow:
         self.parser = mail_parser
         self.ai = ai_extractor
         self.db = db
+        self.async_db = async_db
         self.storage = storage_manager
         self.imap = imap_client_inbox
         self.smtp = smtp_client
-        self.dedup = deduplication_handler
+        self.dedup = deduplication_handler  # 保留兼容
+        self.dedup_service = DeduplicationService(async_db)  # 新服务
         self.settings = settings
         self.pending_retry = []  # Track emails needing batch retry
 
@@ -206,24 +230,24 @@ class AssignmentWorkflow:
         student_name = student_info.get('name')
         assignment_name = student_info.get('assignment_name')
 
-        # 1. 检查是否为重复提交
-        is_duplicate, dup_result = await self.dedup.check_and_handle_duplicate(
-            student_id=student_id,
-            student_name=student_name,
-            assignment_name=assignment_name,
+        # 1. 使用新服务进行去重检查
+        dedup_result = await self.dedup_service.check_all(
             email_uid=email_uid,
-            sender_email=email_data['sender_email'],
-            email_subject=email_data['subject'],
-            attachments=email_data['attachments']
+            student_id=student_id,
+            assignment_name=assignment_name
         )
 
-        if is_duplicate:
-            if dup_result.get('success'):
-                print(f"Duplicate submission updated: {student_id} - {assignment_name}")
-                return {'success': True, 'action': 'updated_duplicate', 'data': dup_result}
-            else:
-                print(f"Failed to handle duplicate: {dup_result.get('error')}")
-                return {'success': False, 'error': dup_result.get('error'), 'action': 'duplicate_failed'}
+        if dedup_result.is_duplicate:
+            if dedup_result.duplicate_type == 'email':
+                print(f"Email already processed: {email_uid}")
+                return {'success': True, 'action': 'skip', 'reason': 'email_duplicate'}
+
+            elif dedup_result.duplicate_type == 'submission':
+                print(f"Duplicate submission: {student_id} - {assignment_name}")
+                # 使用事务性文件操作创建新版本
+                return await self._handle_duplicate_version(
+                    email_uid, email_data, student_info, dedup_result.version
+                )
 
         # 2. 保存附件到本地
         print("Storing attachments locally...")
@@ -316,6 +340,73 @@ class AssignmentWorkflow:
                 'submission_id': submission.id
             }
         }
+
+    async def _handle_duplicate_version(
+        self,
+        email_uid: str,
+        email_data: Dict,
+        student_info: Dict,
+        new_version: int
+    ) -> dict:
+        """处理重复提交，创建新版本"""
+        student_id = student_info['student_id']
+        student_name = student_info['name']
+        assignment_name = student_info['assignment_name']
+
+        try:
+            # 1. 创建新的提交记录
+            submission = await self.async_db.create_submission(
+                student_id=student_id,
+                assignment_name=assignment_name,
+                email_uid=email_uid,
+                email_subject=email_data['subject'],
+                sender_email=email_data['sender_email'],
+                sender_name=student_name,
+                submission_time=datetime.now(),
+                version=new_version,
+                is_latest=True
+            )
+
+            if not submission:
+                return {'success': False, 'error': 'Failed to create submission', 'action': 'duplicate_failed'}
+
+            # 2. 使用事务性文件操作保存附件
+            file_op = TransactionalFileOperation(submission.id)
+            try:
+                local_path = self.storage.store_submission(
+                    assignment_name=assignment_name,
+                    student_id=student_id,
+                    name=student_name,
+                    attachments=email_data['attachments']
+                )
+
+                # 3. 标记旧版本
+                await self.dedup_service.version_manager.mark_old_versions(
+                    student_id, assignment_name, new_version
+                )
+
+                # 4. 移动邮件
+                self.parser.move_to_folder(email_uid, self.settings.TARGET_FOLDER)
+
+                # 5. 发送更新通知
+                if self.settings.ENABLE_REPLY:
+                    self.smtp.send_reply(
+                        to_email=email_data['sender_email'],
+                        student_name=student_name,
+                        assignment_name=assignment_name,
+                        custom_message="你的作业已更新为最新版本。"
+                    )
+
+                await file_op.cleanup()
+                return {'success': True, 'action': 'updated_duplicate', 'version': new_version}
+
+            except Exception as e:
+                await file_op._rollback()
+                raise e
+
+        except Exception as e:
+            print(f"Error handling duplicate: {e}")
+            return {'success': False, 'error': str(e), 'action': 'duplicate_failed'}
 
     def delete_submission(self, submission_id: int) -> bool:
         """
