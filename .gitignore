@@ -26,3 +26,38 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# Environment & Credentials
+.env
+.env.local
+
+# Test & Debug files
+test_*.py
+*_test.py
+debug/
+*.log
+
+# Claude & Memory
+.claude/
+MEMORY.md
+memory/
+
+# Submissions & Storage
+submissions/*
+storage/*
+storage/*
+!submissions/.gitkeep
+!storage/__init__.py
+
+# Reports & Documentation (keep docs/)
+*_REPORT.md
+*_SUMMARY.md
+说明.md
+
+# Migrations
+migrate_*.py
+
+# UI test scripts
+show_ui_*.py
+verify_*.py
+clean_*.py

@@ -14,11 +14,11 @@ from config.settings import settings
 
 def main():
     """主函数"""
-    # 修复 Windows 控制台编码问题
+    # 修复 Windows 控制台编码问题，并启用行缓冲让日志实时显示
     if sys.platform == 'win32':
         import io
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
 
     print("="*60)
     print("QQ邮箱作业收发AI系统")
