@@ -108,6 +108,10 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         self.card_attachments = self._create_card("附件列表")
         self.card_attachments.pack(fill="x", pady=(0, 15))
 
+        # 卡片5: 邮件正文 (NEW)
+        self.card_email_body = self._create_card("邮件正文")
+        self.card_email_body.pack(fill="x", pady=(0, 15))
+
     def _create_card(self, title: str) -> ctk.CTkFrame:
         """创建信息卡片
 
@@ -645,6 +649,7 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         self._update_email_card(submission_data)
         self._update_assignment_card(submission_data)
         self._update_attachments_card(submission_data)
+        self._update_email_body_card(submission_data)
 
         # 如果未显示，执行滑入动画
         if not self.is_visible:
@@ -738,3 +743,175 @@ class EmailPreviewDrawer(ctk.CTkFrame):
                 self.pin_button.configure(fg_color="#E9ECEF", text="📌 固定")
 
         print(f"固定状态: {'已固定' if self.is_pinned else '未固定'}")
+
+    def _update_email_body_card(self, data: StudentData) -> None:
+        """更新邮件正文卡片
+
+        Args:
+            data: 包含提交信息的字典
+        """
+        # 清空现有内容
+        for widget in self.card_email_body.content_frame.winfo_children():
+            widget.destroy()
+
+        # 获取提交ID
+        submission_id = data.get('id')
+        if not submission_id:
+            self._show_body_error("无法获取提交ID")
+            return
+
+        # 从数据库获取邮件正文
+        from database.operations import db
+        body_data = db.get_email_body(submission_id)
+
+        if body_data:
+            # 显示缓存的内容
+            self._display_body_content(body_data)
+        else:
+            # 显示加载状态并从IMAP加载
+            self._show_body_loading()
+            self.after(100, lambda: self._load_email_body_from_imap(data))
+
+    def _display_body_content(self, body_data: Dict) -> None:
+        """显示邮件正文内容
+
+        Args:
+            body_data: 邮件正文数据，包含 keys: plain_text, html_markdown, format
+        """
+        # 清空现有内容
+        for widget in self.card_email_body.content_frame.winfo_children():
+            widget.destroy()
+
+        # 优先使用纯文本，其次使用HTML转Markdown
+        content = body_data.get('plain_text') or body_data.get('html_markdown', '')
+        format_type = body_data.get('format', 'unknown')
+
+        # 如果没有内容
+        if not content or content.strip() == '':
+            no_content_label = ctk.CTkLabel(
+                self.card_email_body.content_frame,
+                text="此邮件没有正文内容",
+                font=("Arial", self.FONT_SIZE_NORMAL),
+                text_color="gray"
+            )
+            no_content_label.pack(anchor="w", pady=8)
+            return
+
+        # 显示格式标签
+        format_labels = {
+            'text': '纯文本',
+            'html': 'HTML转Markdown',
+            'both': '纯文本+HTML',
+            'empty': '无内容'
+        }
+        format_text = format_labels.get(format_type, '未知格式')
+
+        format_badge = ctk.CTkLabel(
+            self.card_email_body.content_frame,
+            text=format_text,
+            fg_color="#74C0FC",
+            text_color="white",
+            corner_radius=4,
+            padx=self.PADDING_BADGE,
+            pady=self.PADDING_BADGE,
+            font=("Arial", 9)
+        )
+        format_badge.pack(anchor="w", pady=(0, self.PADDING_SECTION))
+
+        # 创建可滚动文本框
+        scrollable_frame = ctk.CTkScrollableFrame(
+            self.card_email_body.content_frame,
+            height=200,
+            label_text=""
+        )
+        scrollable_frame.pack(fill="both", expand=True, pady=(0, self.PADDING_CARD))
+
+        # 显示文本内容
+        text_label = ctk.CTkLabel(
+            scrollable_frame,
+            text=content,
+            font=("Arial", 10),
+            anchor="w",
+            justify="left",
+            wraplength=600
+        )
+        text_label.pack(anchor="w", padx=5, pady=5)
+
+    def _show_body_loading(self) -> None:
+        """显示邮件正文加载状态"""
+        # 清空现有内容
+        for widget in self.card_email_body.content_frame.winfo_children():
+            widget.destroy()
+
+        loading_label = ctk.CTkLabel(
+            self.card_email_body.content_frame,
+            text="⏳ 正在从服务器加载邮件正文...",
+            font=("Arial", self.FONT_SIZE_NORMAL),
+            text_color="gray"
+        )
+        loading_label.pack(anchor="w", pady=8)
+
+    def _show_body_error(self, error_message: str) -> None:
+        """显示邮件正文加载错误
+
+        Args:
+            error_message: 错误消息
+        """
+        # 清空现有内容
+        for widget in self.card_email_body.content_frame.winfo_children():
+            widget.destroy()
+
+        error_label = ctk.CTkLabel(
+            self.card_email_body.content_frame,
+            text=f"⚠️ {error_message}",
+            font=("Arial", self.FONT_SIZE_NORMAL),
+            text_color="#FF6B6B"
+        )
+        error_label.pack(anchor="w", pady=8)
+
+    def _load_email_body_from_imap(self, data: StudentData) -> None:
+        """从IMAP服务器加载邮件正文
+
+        Args:
+            data: 包含提交信息的字典
+        """
+        email_uid = data.get('email_uid')
+        submission_id = data.get('id')
+
+        if not email_uid or not submission_id:
+            self._show_body_error("缺少必要信息（UID或提交ID）")
+            return
+
+        try:
+            # 导入邮件解析器
+            from mail.parser import MailParser
+            from database.operations import db
+
+            # 连接并解析邮件
+            mail_parser = MailParser()
+            mail_parser.connect()
+
+            parsed_email = mail_parser.parse_email(email_uid)
+            mail_parser.disconnect()
+
+            if not parsed_email:
+                self._show_body_error("无法解析邮件")
+                return
+
+            # 提取邮件正文数据
+            body_data = parsed_email.get('email_body')
+            if not body_data:
+                self._show_body_error("邮件中没有正文信息")
+                return
+
+            # 保存到数据库
+            from database.operations import db
+            db.save_email_body(submission_id, body_data)
+
+            # 显示内容
+            self._display_body_content(body_data)
+
+        except Exception as e:
+            print(f"Error loading email body from IMAP: {e}")
+            self._show_body_error(f"加载失败: {str(e)}")
+
