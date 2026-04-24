@@ -5,6 +5,42 @@ from datetime import datetime
 from database.operations import db
 from config.settings import settings
 
+class CollapsibleFrame(ctk.CTkFrame):
+    """可折叠的框架组件"""
+    def __init__(self, master, title, is_expanded=True, **kwargs):
+        super().__init__(master, **kwargs)
+        
+        self.is_expanded = is_expanded
+        self.title = title
+        
+        # 标题栏按钮
+        self.header_btn = ctk.CTkButton(
+            self, 
+            text=f"{'▼' if self.is_expanded else '▶'} {self.title}",
+            fg_color="transparent",
+            text_color=("gray10", "gray90"),
+            hover_color=("gray70", "gray30"),
+            anchor="w",
+            font=("Arial", 14, "bold"),
+            command=self.toggle
+        )
+        self.header_btn.pack(fill="x", padx=2, pady=2)
+        
+        # 内容区域
+        self.content_frame = ctk.CTkFrame(self, fg_color="transparent")
+        if self.is_expanded:
+            self.content_frame.pack(fill="x", padx=5, pady=5)
+
+    def toggle(self):
+        if self.is_expanded:
+            self.content_frame.pack_forget()
+            self.is_expanded = False
+            self.header_btn.configure(text=f"▶ {self.title}")
+        else:
+            self.content_frame.pack(fill="x", padx=5, pady=5)
+            self.is_expanded = True
+            self.header_btn.configure(text=f"▼ {self.title}")
+
 class MainWindow(ctk.CTk):
     """主窗口"""
 
