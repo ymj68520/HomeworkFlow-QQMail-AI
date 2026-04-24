@@ -1,6 +1,7 @@
 """邮件预览侧边栏组件"""
 import os
 import customtkinter as ctk
+import threading
 from typing import Dict, TypedDict, Optional
 from datetime import datetime
 
@@ -757,7 +758,7 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         # 获取提交ID
         submission_id = data.get('id')
         if not submission_id:
-            self._show_body_error("无法获取提交ID")
+            self._show_body_error("无法获取提交ID", data)
             return
 
         # 从数据库获取邮件正文
@@ -796,6 +797,14 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             )
             no_content_label.pack(anchor="w", pady=8)
             return
+
+        # 处理大型邮件正文 - 截断至5000字符
+        MAX_LENGTH = 5000
+        was_truncated = False
+        if len(content) > MAX_LENGTH:
+            original_length = len(content)
+            content = content[:MAX_LENGTH]
+            was_truncated = True
 
         # 显示格式标签
         format_labels = {
@@ -837,6 +846,17 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         )
         text_label.pack(anchor="w", padx=5, pady=5)
 
+        # 如果内容被截断，显示提示
+        if was_truncated:
+            truncation_label = ctk.CTkLabel(
+                self.card_email_body.content_frame,
+                text=f"⚠️ 内容过长（{original_length}字符），已截断至{MAX_LENGTH}字符显示",
+                font=("Arial", 9),
+                text_color="#FFA500",
+                wraplength=600
+            )
+            truncation_label.pack(anchor="w", pady=(0, self.PADDING_CARD))
+
     def _show_body_loading(self) -> None:
         """显示邮件正文加载状态"""
         # 清空现有内容
@@ -851,11 +871,12 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         )
         loading_label.pack(anchor="w", pady=8)
 
-    def _show_body_error(self, error_message: str) -> None:
+    def _show_body_error(self, error_message: str, submission_data: Optional[StudentData] = None) -> None:
         """显示邮件正文加载错误
 
         Args:
             error_message: 错误消息
+            submission_data: 提交数据（用于重试按钮），可选
         """
         # 清空现有内容
         for widget in self.card_email_body.content_frame.winfo_children():
@@ -865,12 +886,27 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             self.card_email_body.content_frame,
             text=f"⚠️ {error_message}",
             font=("Arial", self.FONT_SIZE_NORMAL),
-            text_color="#FF6B6B"
+            text_color="#FF6B6B",
+            wraplength=600
         )
-        error_label.pack(anchor="w", pady=8)
+        error_label.pack(anchor="w", pady=(0, self.PADDING_SECTION))
+
+        # 如果提供了提交数据，显示重试按钮
+        if submission_data:
+            retry_button = ctk.CTkButton(
+                self.card_email_body.content_frame,
+                text="🔄 重试加载",
+                width=100,
+                height=30,
+                command=lambda: self._load_email_body_from_imap(submission_data),
+                fg_color="#FFA500",
+                text_color="white",
+                hover_color="#FF8C00"
+            )
+            retry_button.pack(anchor="w", pady=(0, self.PADDING_CARD))
 
     def _load_email_body_from_imap(self, data: StudentData) -> None:
-        """从IMAP服务器加载邮件正文
+        """从IMAP服务器加载邮件正文（使用后台线程和超时处理）
 
         Args:
             data: 包含提交信息的字典
@@ -879,39 +915,69 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         submission_id = data.get('id')
 
         if not email_uid or not submission_id:
-            self._show_body_error("缺少必要信息（UID或提交ID）")
+            self._show_body_error("缺少必要信息（UID或提交ID）", data)
             return
 
-        try:
-            # 导入邮件解析器
-            from mail.parser import MailParser
-            from database.operations import db
+        # 显示加载状态
+        self._show_body_loading()
 
-            # 连接并解析邮件
-            mail_parser = MailParser()
-            mail_parser.connect()
+        # 用于检查线程是否完成
+        thread_complete = threading.Event()
+        thread_result = {'success': False, 'error': None, 'body_data': None}
 
-            parsed_email = mail_parser.parse_email(email_uid)
-            mail_parser.disconnect()
+        def load_in_background():
+            """在后台线程中执行IMAP操作"""
+            try:
+                # 导入邮件解析器
+                from mail.parser import MailParser
+                from database.operations import db
 
-            if not parsed_email:
-                self._show_body_error("无法解析邮件")
-                return
+                # 连接并解析邮件
+                mail_parser = MailParser()
+                mail_parser.connect()
 
-            # 提取邮件正文数据
-            body_data = parsed_email.get('email_body')
-            if not body_data:
-                self._show_body_error("邮件中没有正文信息")
-                return
+                parsed_email = mail_parser.parse_email(email_uid)
+                mail_parser.disconnect()
 
-            # 保存到数据库
-            from database.operations import db
-            db.save_email_body(submission_id, body_data)
+                if not parsed_email:
+                    thread_result['error'] = "无法解析邮件"
+                    return
 
-            # 显示内容
-            self._display_body_content(body_data)
+                # 提取邮件正文数据
+                body_data = parsed_email.get('email_body')
+                if not body_data:
+                    thread_result['error'] = "邮件中没有正文信息"
+                    return
 
-        except Exception as e:
-            print(f"Error loading email body from IMAP: {e}")
-            self._show_body_error(f"加载失败: {str(e)}")
+                # 保存到数据库
+                db.save_email_body(submission_id, body_data)
+
+                # 成功
+                thread_result['success'] = True
+                thread_result['body_data'] = body_data
+
+            except Exception as e:
+                print(f"Error loading email body from IMAP: {e}")
+                thread_result['error'] = f"加载失败: {str(e)}"
+            finally:
+                thread_complete.set()
+
+        # 启动后台线程
+        thread = threading.Thread(target=load_in_background, daemon=True)
+        thread.start()
+
+        # 检查超时的回调函数（10秒后）
+        def check_timeout():
+            if not thread_complete.is_set():
+                # 线程仍在运行，超时
+                self._show_body_error("加载超时（>10秒），请重试", data)
+            elif thread_result['success']:
+                # 成功完成
+                self._display_body_content(thread_result['body_data'])
+            else:
+                # 完成但有错误
+                self._show_body_error(thread_result['error'] or "未知错误", data)
+
+        # 10秒后检查超时
+        self.after(10000, check_timeout)
 
