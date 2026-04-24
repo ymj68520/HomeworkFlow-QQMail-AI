@@ -272,6 +272,164 @@ class AIExtractor:
 
         return results
 
+    async def batch_retry_unknown(
+        self,
+        email_list: List[Dict],
+        batch_size: int = 20
+    ) -> List[Dict]:
+        """
+        Retry extraction for emails with Unknown results using batch processing
+
+        Args:
+            email_list: List of dicts with keys:
+                       - uid, subject, from, attachments, previous_result
+            batch_size: Max emails per API call (default: 20)
+
+        Returns:
+            List of extraction results in same order as input
+        """
+        if not email_list:
+            return []
+
+        all_results = []
+
+        # Process in batches to avoid overwhelming the API
+        for i in range(0, len(email_list), batch_size):
+            batch = email_list[i:i+batch_size]
+
+            # Construct batch prompt
+            batch_prompt = self._construct_batch_retry_prompt(batch)
+
+            try:
+                # Call AI with batch prompt
+                response = await asyncio.wait_for(
+                    self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": batch_prompt}
+                        ],
+                        temperature=0.1,
+                        response_format={"type": "json_object"}
+                    ),
+                    timeout=30.0
+                )
+
+                # Parse batch response
+                batch_results = json.loads(response.choices[0].message.content)
+
+                # Handle both array and single object responses
+                if isinstance(batch_results, list):
+                    all_results.extend(batch_results)
+                else:
+                    # Single result returned (shouldn't happen but handle gracefully)
+                    all_results.append(batch_results)
+
+            except asyncio.TimeoutError:
+                print(f"Batch retry timeout for batch {i//batch_size + 1}")
+                # Return None results for this batch
+                all_results.extend([
+                    {
+                        'is_assignment': False,
+                        'student_id': None,
+                        'name': None,
+                        'assignment_name': None,
+                        'confidence': 0.0,
+                        'reasoning': 'Batch retry timeout'
+                    }
+                    for _ in batch
+                ])
+
+            except Exception as e:
+                print(f"Batch retry error for batch {i//batch_size + 1}: {e}")
+                # Return None results for this batch
+                all_results.extend([
+                    {
+                        'is_assignment': False,
+                        'student_id': None,
+                        'name': None,
+                        'assignment_name': None,
+                        'confidence': 0.0,
+                        'reasoning': f'Batch retry error: {str(e)}'
+                    }
+                    for _ in batch
+                ])
+
+        # Normalize results
+        for result in all_results:
+            if result.get('student_id'):
+                result['student_id'] = self._normalize_student_id(result['student_id'])
+
+            if result.get('assignment_name'):
+                result['assignment_name'] = self.normalize_assignment_name(
+                    result['assignment_name']
+                )
+
+        return all_results
+
+    def _construct_batch_retry_prompt(self, email_list: List[Dict]) -> str:
+        """
+        Construct prompt for batch retry extraction
+
+        Args:
+            email_list: List of email dicts with uid, subject, from, attachments
+
+        Returns:
+            Formatted prompt string
+        """
+        prompt_parts = [
+            "The following emails failed initial extraction. Please analyze them together",
+            "and extract student information. The context from multiple emails may help",
+            "identify patterns.\n\n"
+        ]
+
+        for idx, email in enumerate(email_list, 1):
+            prompt_parts.append(f"Email {idx}:")
+            prompt_parts.append(f"  Subject: {email['subject']}")
+            prompt_parts.append(f"  From: {email['from']}")
+
+            attachments = email.get('attachments', [])
+            if attachments:
+                attachment_names = [att.get('filename', '') for att in attachments]
+                prompt_parts.append(f"  Attachments: {', '.join(attachment_names)}")
+            else:
+                prompt_parts.append("  Attachments: None")
+
+            if email.get('previous_result'):
+                prev = email['previous_result']
+                prompt_parts.append(f"  Previous failed result: student_id={prev.get('student_id')}, "
+                                  f"name={prev.get('name')}, assignment={prev.get('assignment_name')}")
+
+            prompt_parts.append("")
+
+        prompt_parts.append("\nPlease return a JSON array with extraction results for each email in order.")
+        prompt_parts.append("Each result should have: is_assignment, student_id, name, assignment_name, confidence, reasoning.")
+
+        return "\n".join(prompt_parts)
+
+    def _normalize_student_id(self, student_id: str) -> str:
+        """
+        Normalize student ID by extracting numeric part
+
+        Args:
+            student_id: Raw student ID string
+
+        Returns:
+            Normalized student ID or None
+        """
+        if not student_id:
+            return None
+
+        student_id = str(student_id).strip()
+
+        # Extract continuous numeric parts
+        numbers = re.findall(r'\d+', student_id)
+        if numbers:
+            # Return the longest numeric sequence (usually the student ID)
+            return max(numbers, key=len)
+
+        return None
+
     def normalize_assignment_name(self, raw_name: str) -> str:
         """
         规范化作业名称为"作业1/2/3/4"格式
