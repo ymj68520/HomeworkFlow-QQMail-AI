@@ -6,6 +6,7 @@
 
 - 自动监听QQ邮箱收件箱
 - AI智能提取学号、姓名、作业名
+- 批量重试机制提升提取准确率
 - 自动规范化作业名称（作业1/2/3/4）
 - 重复提交自动保留最新版本
 - 本地文件按作业/学生组织存储
@@ -67,20 +68,59 @@ The system uses AI for extracting student information from emails:
 - **Caching:** Results cached in database for performance
 - **Fallback:** Regex validation only (no direct regex extraction)
 - **Batch Processing:** Concurrent processing for bulk operations
+- **Batch Retry:** Two-phase extraction for improved accuracy
 
 ### Extraction Flow
 
+#### Phase 1: Individual Processing
 1. Check cache for existing result
 2. If cache miss, call AI extractor
 3. Validate and sanitize AI output with regex
 4. Save result to cache
 5. Return extracted information
 
+#### Phase 2: Batch Retry (New)
+After all individual processing completes, emails with Unknown (null/None) fields are retried together in a single batch AI call. This provides more context to the AI and improves extraction success rates.
+
+**Configuration:**
+- Batch size: Maximum 20 emails per API call
+- Timeout: 30 seconds per batch
+- Fallback: Failed batches don't block the workflow
+
+**Performance Metrics:**
+- Number of emails in batch
+- Processing duration
+- Improvement rate (success / total)
+- Per-email average time
+
+**Example Output:**
+```
+Batch Retry Phase: 3 emails
+Calling batch AI extraction...
+Batch retry performance:
+  Emails processed: 3
+  Duration: 4.52 seconds
+  Average time per email: 1.51 seconds
+
+✓ Batch retry succeeded for 1002
+  student_id=2021001
+  name=学生1
+  assignment=作业1
+  confidence=0.90
+
+Batch retry metrics:
+  Improvement rate: 66.7%
+  Total processed: 3
+  Successfully fixed: 2
+  Still failed: 1
+```
+
 ### Quality Tracking
 
 - `is_fallback` flag tracks regex fallback usage
 - Target: <5% fallback rate in production
 - Confidence scores stored for analysis
+- Batch retry improvement rate tracked for optimization
 
 ## GUI功能
 
