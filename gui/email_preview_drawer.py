@@ -54,6 +54,10 @@ class EmailPreviewDrawer(ctk.CTkFrame):
     COLOR_DOWNLOADED = "#339AF0"
     COLOR_REPLIED = "#CC5DE8"
 
+    # 邮件正文相关常量
+    EMAIL_BODY_MAX_LENGTH = 5000
+    IMAP_TIMEOUT_MS = 10000
+
     def __init__(self, parent, **kwargs) -> None:
         """初始化邮件预览侧边栏
 
@@ -798,12 +802,11 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             no_content_label.pack(anchor="w", pady=8)
             return
 
-        # 处理大型邮件正文 - 截断至5000字符
-        MAX_LENGTH = 5000
+        # 处理大型邮件正文 - 截断至指定长度
         was_truncated = False
-        if len(content) > MAX_LENGTH:
+        if len(content) > self.EMAIL_BODY_MAX_LENGTH:
             original_length = len(content)
-            content = content[:MAX_LENGTH]
+            content = content[:self.EMAIL_BODY_MAX_LENGTH]
             was_truncated = True
 
         # 显示格式标签
@@ -850,9 +853,9 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         if was_truncated:
             truncation_label = ctk.CTkLabel(
                 self.card_email_body.content_frame,
-                text=f"⚠️ 内容过长（{original_length}字符），已截断至{MAX_LENGTH}字符显示",
+                text=f"⚠️ 内容过长（{original_length}字符），已截断至{self.EMAIL_BODY_MAX_LENGTH}字符显示",
                 font=("Arial", 9),
-                text_color="#FFA500",
+                text_color="#FFA000",
                 wraplength=600
             )
             truncation_label.pack(anchor="w", pady=(0, self.PADDING_CARD))
@@ -924,6 +927,7 @@ class EmailPreviewDrawer(ctk.CTkFrame):
         # 用于检查线程是否完成
         thread_complete = threading.Event()
         thread_result = {'success': False, 'error': None, 'body_data': None}
+        thread_lock = threading.Lock()
 
         def load_in_background():
             """在后台线程中执行IMAP操作"""
@@ -940,25 +944,29 @@ class EmailPreviewDrawer(ctk.CTkFrame):
                 mail_parser.disconnect()
 
                 if not parsed_email:
-                    thread_result['error'] = "无法解析邮件"
+                    with thread_lock:
+                        thread_result['error'] = "无法解析邮件"
                     return
 
                 # 提取邮件正文数据
                 body_data = parsed_email.get('email_body')
                 if not body_data:
-                    thread_result['error'] = "邮件中没有正文信息"
+                    with thread_lock:
+                        thread_result['error'] = "邮件中没有正文信息"
                     return
 
                 # 保存到数据库
                 db.save_email_body(submission_id, body_data)
 
-                # 成功
-                thread_result['success'] = True
-                thread_result['body_data'] = body_data
+                # 成功 - 使用锁保护写入
+                with thread_lock:
+                    thread_result['success'] = True
+                    thread_result['body_data'] = body_data
 
             except Exception as e:
                 print(f"Error loading email body from IMAP: {e}")
-                thread_result['error'] = f"加载失败: {str(e)}"
+                with thread_lock:
+                    thread_result['error'] = f"加载失败: {str(e)}"
             finally:
                 thread_complete.set()
 
@@ -968,16 +976,17 @@ class EmailPreviewDrawer(ctk.CTkFrame):
 
         # 检查超时的回调函数（10秒后）
         def check_timeout():
-            if not thread_complete.is_set():
-                # 线程仍在运行，超时
-                self._show_body_error("加载超时（>10秒），请重试", data)
-            elif thread_result['success']:
-                # 成功完成
-                self._display_body_content(thread_result['body_data'])
-            else:
-                # 完成但有错误
-                self._show_body_error(thread_result['error'] or "未知错误", data)
+            with thread_lock:
+                if not thread_complete.is_set():
+                    # 线程仍在运行，超时
+                    self._show_body_error("加载超时（>10秒），请重试", data)
+                elif thread_result.get('success'):
+                    # 成功完成
+                    self._display_body_content(thread_result['body_data'])
+                else:
+                    # 完成但有错误
+                    self._show_body_error(thread_result.get('error') or "未知错误", data)
 
         # 10秒后检查超时
-        self.after(10000, check_timeout)
+        self.after(self.IMAP_TIMEOUT_MS, check_timeout)
 
