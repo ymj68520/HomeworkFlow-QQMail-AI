@@ -933,15 +933,13 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             """在后台线程中执行IMAP操作"""
             try:
                 # 导入邮件解析器
-                from mail.parser import MailParser
+                from mail.parser import mail_parser_target
                 from database.operations import db
 
                 # 连接并解析邮件
-                mail_parser = MailParser()
-                mail_parser.connect()
-
-                parsed_email = mail_parser.parse_email(email_uid)
-                mail_parser.disconnect()
+                mail_parser_target.connect()
+                parsed_email = mail_parser_target.parse_email(email_uid)
+                mail_parser_target.disconnect()
 
                 if not parsed_email:
                     with thread_lock:
