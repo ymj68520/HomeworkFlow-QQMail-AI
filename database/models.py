@@ -16,6 +16,10 @@ class SubmissionStatus(str, enum.Enum):
     COMPLETED = "completed"          # 已完成 (全部处理完毕)
     IGNORED = "ignored"              # 已忽略 (非作业邮件等)
 
+class RelationType(str, enum.Enum):
+    VERSION = "version"              # 版本迭代关系 (同一学生的多次提交)
+    POSSIBLE_DUP = "possible_dup"    # 可能重复 (需要人工确认)
+
 class Student(Base):
     __tablename__ = 'students'
 
@@ -64,7 +68,7 @@ class Submission(Base):
 
     # 新增字段：记录关系管理
     parent_id = Column(Integer, ForeignKey('submissions.id'), nullable=True, index=True)
-    relation_type = Column(String(20), nullable=True, index=True)  # 'version' | 'possible_dup' | None
+    relation_type = Column(String(20), nullable=True, index=True)  # RelationType.VERSION | RelationType.POSSIBLE_DUP | None
     is_primary = Column(Boolean, default=True, nullable=False, index=True)
 
     created_at = Column(DateTime, default=datetime.now)
