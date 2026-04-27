@@ -58,13 +58,6 @@ class RetryHandler:
             'details': []
         }
 
-        # Ensure IMAP connection
-        if not self.parser.connect():
-            return {
-                **results,
-                'error': '无法连接到邮件服务器'
-            }
-
         try:
             for idx, submission in enumerate(abnormal_entries):
                 email_uid = submission.get('email_uid')
@@ -73,6 +66,14 @@ class RetryHandler:
 
                 if progress_callback:
                     progress_callback(idx + 1, total, f"正在处理: {name} ({student_id})")
+
+                # Ensure IMAP connection (connect once, use for all emails)
+                if not self.parser.imap.connection:
+                    if not self.parser.connect():
+                        return {
+                            **results,
+                            'error': '无法连接到邮件服务器'
+                        }
 
                 # Check if email still exists
                 if not await self._email_exists(email_uid):
@@ -87,7 +88,7 @@ class RetryHandler:
 
                 # Re-run full workflow
                 try:
-                    email_data = self.parser.parse_email(email_uid)
+                    email_data = self.parser.parse_email(str(email_uid))
                     if not email_data:
                         results['failed'] += 1
                         results['details'].append({
@@ -98,11 +99,18 @@ class RetryHandler:
                         })
                         continue
 
-                    # Re-process with workflow
+                    # Get existing submission ID for proper update
+                    submission_id = submission.get('id')
+                    message_id = submission.get('message_id')
+
+                    # Extract student info
+                    student_info = await self._extract_info(email_data)
+
+                    # Re-process with workflow, passing existing submission info
                     result = await self.workflow._process_extracted_info(
-                        email_uid=email_uid,
+                        email_uid=str(email_uid),
                         email_data=email_data,
-                        student_info=await self._extract_info(email_data),
+                        student_info=student_info,
                         is_retry=True
                     )
 
@@ -176,6 +184,14 @@ class RetryHandler:
             }
 
         try:
+            # Ensure IMAP connection (connect once, use for all emails)
+            if not self.parser.imap.connection:
+                if not self.parser.connect():
+                    return {
+                        **results,
+                        'error': '无法连接到邮件服务器'
+                    }
+
             for idx, submission in enumerate(submissions):
                 email_uid = submission.get('email_uid')
                 submission_id = submission.get('id')
@@ -185,7 +201,7 @@ class RetryHandler:
                     progress_callback(idx + 1, total, f"正在重新分析: {student_id}")
 
                 # Fetch fresh email content
-                email_data = self._fetch_fresh_email(email_uid)
+                email_data = self._fetch_fresh_email(str(email_uid))
                 if not email_data:
                     results['failed'] += 1
                     results['details'].append({
@@ -265,17 +281,22 @@ class RetryHandler:
         try:
             # Try TARGET_FOLDER first
             if self.parser.imap.select_folder(self.settings.TARGET_FOLDER):
-                exists = self.parser.uid_exists(email_uid)
+                exists = self.parser.imap.uid_exists(str(email_uid))
                 if exists:
+                    print(f"[RetryHandler] Email {email_uid} found in TARGET_FOLDER")
                     return True
 
             # Fallback to INBOX
             if self.parser.imap.select_folder('INBOX'):
-                exists = self.parser.uid_exists(email_uid)
-                return exists
+                exists = self.parser.imap.uid_exists(str(email_uid))
+                if exists:
+                    print(f"[RetryHandler] Email {email_uid} found in INBOX")
+                    return exists
 
+            print(f"[RetryHandler] Email {email_uid} not found in either folder")
             return False
-        except Exception:
+        except Exception as e:
+            print(f"[RetryHandler] Error checking email {email_uid}: {e}")
             return False
 
     def _fetch_fresh_email(self, email_uid: str) -> Optional[Dict]:
@@ -283,19 +304,26 @@ class RetryHandler:
         try:
             # Try TARGET_FOLDER first
             if self.parser.imap.select_folder(self.settings.TARGET_FOLDER):
-                email_data = self.parser.parse_email(email_uid)
-                if email_data:
-                    return email_data
+                # Check if UID exists before parsing
+                if self.parser.imap.uid_exists(email_uid):
+                    email_data = self.parser.parse_email(email_uid)
+                    if email_data:
+                        return email_data
 
-            # Fallback to INBOX
+            # Fallback to INBOX only if not found in TARGET_FOLDER
             if self.parser.imap.select_folder('INBOX'):
-                email_data = self.parser.parse_email(email_uid)
-                if email_data:
-                    return email_data
+                # Check if UID exists before parsing
+                if self.parser.imap.uid_exists(email_uid):
+                    email_data = self.parser.parse_email(email_uid)
+                    if email_data:
+                        return email_data
 
+            print(f"[RetryHandler] Email {email_uid} not found in either folder")
             return None
         except Exception as e:
-            print(f"Error fetching email {email_uid}: {e}")
+            print(f"[RetryHandler] Error fetching email {email_uid}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     async def _extract_info(self, email_data: Dict) -> Dict:
