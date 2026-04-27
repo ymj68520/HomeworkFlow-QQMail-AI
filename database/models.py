@@ -61,12 +61,21 @@ class Submission(Base):
     local_path = Column(Text)
     version = Column(Integer, default=1, nullable=False)
     is_latest = Column(Boolean, default=True, nullable=True)
+
+    # 新增字段：记录关系管理
+    parent_id = Column(Integer, ForeignKey('submissions.id'), nullable=True, index=True)
+    relation_type = Column(String(20), nullable=True, index=True)  # 'version' | 'possible_dup' | None
+    is_primary = Column(Boolean, default=True, nullable=False, index=True)
+
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     student = relationship('Student', back_populates='submissions')
     assignment = relationship('Assignment', back_populates='submissions')
     attachments = relationship('Attachment', back_populates='submission', cascade='all, delete-orphan')
+
+    # 新增关系
+    parent = relationship('Submission', remote_side=[id], backref='children')
 
 class Attachment(Base):
     __tablename__ = 'attachments'
