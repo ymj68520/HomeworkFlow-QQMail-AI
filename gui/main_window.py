@@ -120,6 +120,7 @@ class MainWindow(QMainWindow):
 
         # 刷新按钮
         self.refresh_btn = QPushButton("刷新")
+        self.refresh_btn.setObjectName("RefreshButton")
         self.refresh_btn.setFixedSize(80, 24)
         self.refresh_btn.setCursor(Qt.PointingHandCursor)
         self.statusBar().addPermanentWidget(self.refresh_btn)
