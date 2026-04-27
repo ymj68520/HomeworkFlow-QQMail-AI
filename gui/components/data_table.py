@@ -122,3 +122,141 @@ class DataTable(QWidget):
             data: 子记录数据
         """
         self.childClicked.emit(data)
+
+    def clear_data(self):
+        """清空表格数据"""
+        # 清除现有的可折叠行
+        for row in self.collapsible_rows:
+            row.deleteLater()
+        self.collapsible_rows.clear()
+
+        # 清空布局
+        while self.main_layout.count():
+            item = self.main_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def add_row(self, row_data: dict):
+        """
+        添加单行数据（向后兼容方法）
+
+        Args:
+            row_data: 行数据字典
+        """
+        # 转换为分组格式
+        group_data = {
+            'primary_submission': row_data,
+            'children': []
+        }
+        collapsible_row = CollapsibleRow(group_data, self)
+        collapsible_row.rowDoubleClicked.connect(self._on_row_double_clicked)
+        collapsible_row.childClicked.connect(self._on_child_clicked)
+        self.main_layout.insertWidget(self.main_layout.count() - 1, collapsible_row)  # 在stretch之前插入
+        self.collapsible_rows.append(collapsible_row)
+
+    def set_data_bulk(self, data_list: list):
+        """
+        批量设置数据（向后兼容方法）
+
+        Args:
+            data_list: 数据字典列表
+        """
+        # 转换为分组格式
+        grouped_data = [
+            {
+                'primary_submission': row_data,
+                'children': []
+            }
+            for row_data in data_list
+        ]
+        self.set_data(grouped_data)
+
+    def rowCount(self):
+        """返回行数（向后兼容方法）"""
+        return len(self.collapsible_rows)
+
+    def item(self, row: int, column: int):
+        """
+        获取表格项（向后兼容方法）
+
+        注意：这是简化实现，仅用于基本兼容
+        """
+        if row < len(self.collapsible_rows):
+            collapsible_row = self.collapsible_rows[row]
+            # 返回一个模拟的 QTableWidgetItem
+            class MockItem:
+                def __init__(self, text):
+                    self._text = str(text)
+
+                def text(self):
+                    return self._text
+
+            # 根据列返回对应的数据
+            data = collapsible_row.data
+            primary = data.get('primary_submission', {})
+
+            column_mapping = {
+                0: primary.get('student_id', ''),
+                1: primary.get('student_name', ''),
+                2: primary.get('assignment_name', ''),
+                3: primary.get('submission_time', ''),
+                4: primary.get('status', ''),
+                5: primary.get('local_path', ''),
+                6: primary.get('local_path', '')
+            }
+
+            return MockItem(column_mapping.get(column, ''))
+
+        return None
+
+    def setSelectionModel(self, selection_model):
+        """设置选择模型（向后兼容占位符）"""
+        pass
+
+    def selectionModel(self):
+        """返回选择模型（向后兼容占位符）"""
+        return MockSelectionModel()
+
+    def setSelectionMode(self, mode):
+        """设置选择模式（向后兼容占位符）"""
+        pass
+
+    def set_headers(self, headers, stretch_column=None):
+        """
+        设置表头（向后兼容占位符）
+
+        Args:
+            headers: 表头列表
+            stretch_column: 伸缩列索引
+        """
+        pass
+
+    def update_rows_bulk(self, row_updates: dict):
+        """
+        批量更新行数据（向后兼容方法）
+
+        Args:
+            row_updates: 字典，键为行索引，值为要更新的数据字典
+        """
+        for row_idx, updates in row_updates.items():
+            if row_idx < len(self.collapsible_rows):
+                collapsible_row = self.collapsible_rows[row_idx]
+                # 更新主记录数据
+                primary = collapsible_row.data.get('primary_submission', {})
+                primary.update(updates)
+                # 重新创建行组件
+                collapsible_row.primary_row.deleteLater()
+                collapsible_row.primary_row = collapsible_row._create_primary_row()
+                collapsible_row.layout().insertWidget(0, collapsible_row.primary_row)
+
+
+class MockSelectionModel:
+    """模拟选择模型（向后兼容）"""
+    def __init__(self):
+        self._selected_rows = []
+
+    def selectedRows(self):
+        return self._selected_rows
+
+    def select(self, index, flags):
+        pass

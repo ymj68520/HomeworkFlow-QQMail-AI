@@ -156,8 +156,13 @@ class CollapsibleRow(QWidget):
         Returns:
             格式化后的字符串
         """
-        # 获取字段值
-        value = self.data.get(field)
+        # 处理分组数据格式
+        if 'primary_submission' in self.data:
+            primary = self.data.get('primary_submission', {})
+            value = primary.get(field)
+        else:
+            # 直接数据格式（向后兼容）
+            value = self.data.get(field)
 
         if value is None or value == '':
             return '-'
@@ -198,7 +203,13 @@ class CollapsibleRow(QWidget):
         Returns:
             颜色类型字符串
         """
-        status = self.data.get('status', 'pending')
+        # 处理分组数据格式
+        if 'primary_submission' in self.data:
+            primary = self.data.get('primary_submission', {})
+            status = primary.get('status', 'pending')
+        else:
+            status = self.data.get('status', 'pending')
+
         color_map = {
             'completed': 'success',
             'download_failed': 'error',

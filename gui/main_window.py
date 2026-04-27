@@ -13,13 +13,14 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from gui.components.sidebar import Sidebar
 from gui.components.data_table import DataTable
 from gui.components.drawer import Drawer
+from gui.components.collapsible_row import CollapsibleRow
 from gui.components.batch_popup import BatchPopup
 from gui.components.pagination import PaginationBar
 from database.operations import db
 from database.models import db_session
 from mail.hybrid_data_loader import hybrid_data_loader
 from mail.target_folder_loader import target_folder_loader
-from mail.parser import mail_parser_inbox as mail_parser
+from mail.parser import mail_parser_inbox, mail_parser_target
 from mail.smtp_client import smtp_client
 from storage.manager import storage_manager
 from core.workflow import workflow
@@ -100,6 +101,15 @@ class MainWindow(QMainWindow):
         # 分页导航栏
         self.pagination = PaginationBar()
 
+        # 刷新按钮
+        self.refresh_btn = QPushButton("刷新")
+        self.refresh_btn.setObjectName("RefreshButton")
+        self.refresh_btn.setFixedSize(80, 32)  # 与分页按钮高度一致
+        self.refresh_btn.setCursor(Qt.PointingHandCursor)
+        
+        # 将刷新按钮添加到分页栏的最右侧
+        self.pagination.layout().addWidget(self.refresh_btn)
+
         # 将表格和分页栏放入垂直布局
         center_container = QWidget()
         center_layout = QVBoxLayout(center_container)
@@ -116,13 +126,6 @@ class MainWindow(QMainWindow):
 
         # 状态栏
         self.statusBar().showMessage("准备就绪")
-
-        # 刷新按钮
-        self.refresh_btn = QPushButton("刷新")
-        self.refresh_btn.setObjectName("RefreshButton")
-        self.refresh_btn.setFixedSize(80, 24)
-        self.refresh_btn.setCursor(Qt.PointingHandCursor)
-        self.statusBar().addPermanentWidget(self.refresh_btn)
 
     def setup_connections(self):
         """绑定信号与槽"""
@@ -141,6 +144,10 @@ class MainWindow(QMainWindow):
 
         # 表格双击
         self.table.rowDoubleClicked.connect(self.on_row_double_clicked)
+
+        # 子记录点击（新功能）
+        if hasattr(self.table, 'childClicked'):
+            self.table.childClicked.connect(self.on_child_record_clicked)
         
         # 表格选择变更
         self.table.itemSelectionChanged.connect(self.update_status_info)
@@ -185,8 +192,20 @@ class MainWindow(QMainWindow):
             result = hybrid_data_loader.get_page_data(page, self.per_page, force_refresh)
             print(f"[UI] Got result: {len(result.get('submissions', []))} submissions, total={result.get('total', 0)}")
 
-            self.all_submissions = result['submissions']
-            self.filtered_submissions = self.all_submissions.copy()
+            # 处理分组格式数据（新格式）或平面数据（旧格式）
+            submissions_data = result['submissions']
+
+            # 检查是否为分组格式（包含 primary_submission 和 children）
+            if submissions_data and isinstance(submissions_data[0], dict) and 'primary_submission' in submissions_data[0]:
+                # 新格式：分组数据
+                self.all_submissions = submissions_data
+                # 为过滤和搜索创建平面视图
+                self.filtered_submissions = self._flatten_grouped_data(submissions_data)
+            else:
+                # 旧格式：平面数据
+                self.all_submissions = submissions_data
+                self.filtered_submissions = self.all_submissions.copy()
+
             self.current_page = result['page']
             self.total_pages = result['total_pages']
             self.total_count = result['total']
@@ -202,12 +221,19 @@ class MainWindow(QMainWindow):
 
             # 更新UI - 优化：只在必要时更新下拉菜单
             self.update_dropdowns_if_needed()
-            # 使用批量渲染
-            print("[UI] Calling refresh_table_bulk...")
-            self.refresh_table_bulk()
-            print("[UI] refresh_table_bulk completed")
-            self.update_stats()
 
+            # 根据数据格式选择渲染方式
+            if isinstance(submissions_data[0], dict) and 'primary_submission' in submissions_data[0]:
+                # 新格式：使用 CollapsibleRow
+                print("[UI] Using CollapsibleRow rendering...")
+                self.refresh_table_collapsible()
+            else:
+                # 旧格式：使用批量渲染
+                print("[UI] Calling refresh_table_bulk...")
+                self.refresh_table_bulk()
+                print("[UI] refresh_table_bulk completed")
+
+            self.update_stats()
             self.update_status_info()
 
         except Exception as e:
@@ -226,6 +252,26 @@ class MainWindow(QMainWindow):
             except Exception as e2:
                 print(f"[UI] Legacy loader also failed: {e2}")
                 traceback.print_exc()
+
+    def _flatten_grouped_data(self, grouped_data: list) -> list:
+        """
+        将分组数据展平为平面列表，用于过滤和搜索
+
+        Args:
+            grouped_data: 分组数据列表，每组包含 primary_submission 和 children
+
+        Returns:
+            展平后的提交记录列表
+        """
+        flattened = []
+        for group in grouped_data:
+            primary = group.get('primary_submission')
+            if primary:
+                flattened.append(primary)
+            # 添加子记录到展平列表
+            for child in group.get('children', []):
+                flattened.append(child)
+        return flattened
 
     def load_data_legacy(self, page: int = 1):
         """
@@ -293,17 +339,29 @@ class MainWindow(QMainWindow):
         # 学生
         students = set()
         for sub in self.all_submissions:
-            students.add(f"{sub['student_id']} - {sub['name']}")
-        
+            # 处理分组格式数据
+            if isinstance(sub, dict) and 'primary_submission' in sub:
+                primary = sub['primary_submission']
+                students.add(f"{primary.get('student_id', '')} - {primary.get('student_name', '')}")
+            else:
+                # 旧格式
+                students.add(f"{sub.get('student_id', '')} - {sub.get('name', '')}")
+
         self.sidebar.student_filter.clear()
         self.sidebar.student_filter.addItem("全部学生")
         self.sidebar.student_filter.addItems(sorted(list(students)))
-        
+
         # 作业
         assignments = set()
         for sub in self.all_submissions:
-            assignments.add(sub['assignment_name'])
-        
+            # 处理分组格式数据
+            if isinstance(sub, dict) and 'primary_submission' in sub:
+                primary = sub['primary_submission']
+                assignments.add(primary.get('assignment_name', ''))
+            else:
+                # 旧格式
+                assignments.add(sub.get('assignment_name', ''))
+
         self.sidebar.assignment_filter.clear()
         self.sidebar.assignment_filter.addItem("全部作业")
         self.sidebar.assignment_filter.addItems(sorted(list(assignments)))
@@ -316,10 +374,10 @@ class MainWindow(QMainWindow):
         # 恢复选择
         idx = self.sidebar.student_filter.findText(curr_student)
         if idx >= 0: self.sidebar.student_filter.setCurrentIndex(idx)
-        
+
         idx = self.sidebar.assignment_filter.findText(curr_assignment)
         if idx >= 0: self.sidebar.assignment_filter.setCurrentIndex(idx)
-        
+
         idx = self.sidebar.status_filter.findText(curr_status)
         if idx >= 0: self.sidebar.status_filter.setCurrentIndex(idx)
 
@@ -338,19 +396,71 @@ class MainWindow(QMainWindow):
             need_update = True
         else:
             # 简单哈希比较
+            def extract_key(submission):
+                """提取用于哈希的关键字段"""
+                if isinstance(submission, dict) and 'primary_submission' in submission:
+                    primary = submission['primary_submission']
+                    return (
+                        primary.get('student_id', ''),
+                        primary.get('student_name', ''),
+                        primary.get('assignment_name', '')
+                    )
+                else:
+                    return (
+                        submission.get('student_id', ''),
+                        submission.get('name', ''),
+                        submission.get('assignment_name', '')
+                    )
+
             current_hash = hash(tuple(
-                (s.get('student_id'), s.get('name'), s.get('assignment_name'))
-                for s in self.all_submissions[:10]  # 只比较前10条
+                extract_key(s) for s in self.all_submissions[:10]  # 只比较前10条
             ))
             need_update = (current_hash != self._last_data_hash)
 
         if need_update:
             self.update_dropdowns()
             # 更新哈希
+            def extract_key(submission):
+                """提取用于哈希的关键字段"""
+                if isinstance(submission, dict) and 'primary_submission' in submission:
+                    primary = submission['primary_submission']
+                    return (
+                        primary.get('student_id', ''),
+                        primary.get('student_name', ''),
+                        primary.get('assignment_name', '')
+                    )
+                else:
+                    return (
+                        submission.get('student_id', ''),
+                        submission.get('name', ''),
+                        submission.get('assignment_name', '')
+                    )
+
             self._last_data_hash = hash(tuple(
-                (s.get('student_id'), s.get('name'), s.get('assignment_name'))
-                for s in self.all_submissions[:10]
+                extract_key(s) for s in self.all_submissions[:10]
             ))
+
+    def refresh_table_collapsible(self):
+        """
+        使用 CollapsibleRow 刷新表格 - 支持分组数据
+
+        处理新的分组格式数据，每个主记录可以展开显示子记录
+        """
+        # 准备分组数据格式
+        grouped_data = []
+        for group in self.all_submissions:
+            if isinstance(group, dict) and 'primary_submission' in group:
+                # 已经是分组格式
+                grouped_data.append(group)
+            else:
+                # 单条记录，转换为分组格式
+                grouped_data.append({
+                    'primary_submission': group,
+                    'children': []
+                })
+
+        # 使用新的 set_data 方法（支持 CollapsibleRow）
+        self.table.set_data(grouped_data)
 
     def refresh_table_bulk(self):
         """
@@ -407,7 +517,13 @@ class MainWindow(QMainWindow):
             self.update_status_info()
         else:
             # 增量更新指定的记录
-            self.update_records_incremental(changed_uids)
+            # 如果使用 CollapsibleRow，可能需要重新渲染整个表格
+            if self.filtered_submissions and isinstance(self.filtered_submissions[0], dict) and 'primary_submission' in self.filtered_submissions[0]:
+                # 新格式：重新加载页面
+                self.load_data(self.current_page)
+            else:
+                # 旧格式：增量更新
+                self.update_records_incremental(changed_uids)
 
     def update_records_incremental(self, uids: list):
         """
@@ -425,20 +541,38 @@ class MainWindow(QMainWindow):
 
                 # 在all_submissions中查找对应记录
                 for sub in self.all_submissions:
-                    if (str(sub['student_id']) == student_id and
-                        sub['assignment_name'] == assignment_name and
-                        sub.get('email_uid') == uid):
+                    target_submission = None
+                    target_student_id = ''
+                    target_assignment_name = ''
+
+                    if isinstance(sub, dict) and 'primary_submission' in sub:
+                        # 新格式：分组数据
+                        primary = sub['primary_submission']
+                        target_student_id = str(primary.get('student_id', ''))
+                        target_assignment_name = primary.get('assignment_name', '')
+                        if primary.get('email_uid') == uid:
+                            target_submission = primary
+                    else:
+                        # 旧格式：平面数据
+                        target_student_id = str(sub.get('student_id', ''))
+                        target_assignment_name = sub.get('assignment_name', '')
+                        if sub.get('email_uid') == uid:
+                            target_submission = sub
+
+                    if (target_student_id == student_id and
+                        target_assignment_name == assignment_name and
+                        target_submission):
 
                         # 更新表格行
-                        status_code = sub.get('status', 'pending')
+                        status_code = target_submission.get('status', 'pending')
                         status_text = self.STATUS_MAP.get(status_code, '未知')
-                        if sub.get('is_late'):
+                        if target_submission.get('is_late'):
                             status_text += " (逾期)"
 
                         self.table.update_rows_bulk({
                             row_idx: {
                                 "状态": status_text,
-                                "本地路径": sub['local_path'] or "未下载"
+                                "本地路径": target_submission.get('local_path') or "未下载"
                             }
                         })
                         break
@@ -447,42 +581,70 @@ class MainWindow(QMainWindow):
         self.update_status_info()
 
     def refresh_table(self):
-        """刷新表格数据"""
+        """
+        刷新表格数据
+
+        根据数据格式自动选择渲染方式
+        """
         self.table.clear_data()
-        
-        for sub in self.filtered_submissions:
-            status_code = sub.get('status', 'pending')
-            status_text = self.STATUS_MAP.get(status_code, '未知')
-            
-            if sub.get('is_late'):
-                status_text += " (逾期)"
 
-            # 格式化收件时间
-            received_time = sub.get('received_time')
-            if received_time:
-                if isinstance(received_time, datetime):
-                    received_str = received_time.strftime('%Y-%m-%d %H:%M:%S')
+        # 检查数据格式
+        if self.filtered_submissions and isinstance(self.filtered_submissions[0], dict) and 'primary_submission' in self.filtered_submissions[0]:
+            # 新格式：使用 CollapsibleRow
+            self.table.set_data(self.filtered_submissions)
+        else:
+            # 旧格式：使用传统表格
+            for sub in self.filtered_submissions:
+                status_code = sub.get('status', 'pending')
+                status_text = self.STATUS_MAP.get(status_code, '未知')
+
+                if sub.get('is_late'):
+                    status_text += " (逾期)"
+
+                # 格式化收件时间
+                received_time = sub.get('received_time')
+                if received_time:
+                    if isinstance(received_time, datetime):
+                        received_str = received_time.strftime('%Y-%m-%d %H:%M:%S')
+                    else:
+                        received_str = str(received_time)
                 else:
-                    received_str = str(received_time)
-            else:
-                received_str = "未知"
+                    received_str = "未知"
 
-            row_data = {
-                "学号": sub['student_id'],
-                "姓名": sub['name'],
-                "作业": sub['assignment_name'],
-                "收件时间": received_str,
-                "提交时间": sub['submission_time'].strftime('%Y-%m-%d %H:%M:%S'),
-                "状态": status_text,
-                "本地路径": sub['local_path'] or "未下载"
-            }
-            self.table.add_row(row_data)
+                row_data = {
+                    "学号": sub['student_id'],
+                    "姓名": sub['name'],
+                    "作业": sub['assignment_name'],
+                    "收件时间": received_str,
+                    "提交时间": sub['submission_time'].strftime('%Y-%m-%d %H:%M:%S'),
+                    "状态": status_text,
+                    "本地路径": sub['local_path'] or "未下载"
+                }
+                self.table.add_row(row_data)
 
     def update_stats(self):
         """更新统计信息"""
+        # 处理分组格式数据
         total = len(self.all_submissions)
-        downloaded = sum(1 for sub in self.all_submissions if sub.get('status') in ['unreplied', 'completed'])
-        replied = sum(1 for sub in self.all_submissions if sub.get('status') == 'completed')
+
+        # 计算已下载和已回复数量
+        downloaded = 0
+        replied = 0
+
+        for sub in self.all_submissions:
+            if isinstance(sub, dict) and 'primary_submission' in sub:
+                # 新格式：分组数据
+                primary = sub['primary_submission']
+                if primary.get('status') in ['unreplied', 'completed']:
+                    downloaded += 1
+                if primary.get('status') == 'completed':
+                    replied += 1
+            else:
+                # 旧格式：平面数据
+                if sub.get('status') in ['unreplied', 'completed']:
+                    downloaded += 1
+                if sub.get('status') == 'completed':
+                    replied += 1
 
         self.sidebar.total_card.value_label.setText(str(total))
         self.sidebar.downloaded_card.value_label.setText(str(downloaded))
@@ -494,12 +656,23 @@ class MainWindow(QMainWindow):
         if not query:
             self.on_filter_change() # 重新应用当前过滤器
         else:
-            self.filtered_submissions = [
-                sub for sub in self.all_submissions
-                if query in str(sub['student_id']) or query in str(sub['name'])
-            ]
+            # 处理分组格式数据
+            self.filtered_submissions = []
+            for sub in self.all_submissions:
+                if isinstance(sub, dict) and 'primary_submission' in sub:
+                    # 新格式：分组数据
+                    primary = sub['primary_submission']
+                    if query in str(primary.get('student_id', '')) or \
+                       query in str(primary.get('student_name', '')):
+                        self.filtered_submissions.append(sub)
+                else:
+                    # 旧格式：平面数据
+                    if query in str(sub.get('student_id', '')) or \
+                       query in str(sub.get('name', '')):
+                        self.filtered_submissions.append(sub)
+
             self.refresh_table()
-        
+
         self.update_status_info()
 
     def on_filter_change(self):
@@ -513,56 +686,111 @@ class MainWindow(QMainWindow):
         # 学生筛选
         if student_filter != "全部学生":
             student_id = student_filter.split(" - ")[0]
-            self.filtered_submissions = [
-                sub for sub in self.filtered_submissions
-                if sub['student_id'] == student_id
-            ]
+            filtered = []
+            for sub in self.filtered_submissions:
+                if isinstance(sub, dict) and 'primary_submission' in sub:
+                    # 新格式：分组数据
+                    if sub['primary_submission'].get('student_id') == student_id:
+                        filtered.append(sub)
+                else:
+                    # 旧格式：平面数据
+                    if sub.get('student_id') == student_id:
+                        filtered.append(sub)
+            self.filtered_submissions = filtered
 
         # 作业筛选
         if assignment_filter != "全部作业":
-            self.filtered_submissions = [
-                sub for sub in self.filtered_submissions
-                if sub['assignment_name'] == assignment_filter
-            ]
+            filtered = []
+            for sub in self.filtered_submissions:
+                if isinstance(sub, dict) and 'primary_submission' in sub:
+                    # 新格式：分组数据
+                    if sub['primary_submission'].get('assignment_name') == assignment_filter:
+                        filtered.append(sub)
+                else:
+                    # 旧格式：平面数据
+                    if sub.get('assignment_name') == assignment_filter:
+                        filtered.append(sub)
+            self.filtered_submissions = filtered
 
         # 状态筛选
         if status_filter == "正常":
-            self.filtered_submissions = [
-                sub for sub in self.filtered_submissions
-                if not sub['is_late']
-            ]
+            filtered = []
+            for sub in self.filtered_submissions:
+                if isinstance(sub, dict) and 'primary_submission' in sub:
+                    # 新格式：分组数据
+                    if not sub['primary_submission'].get('is_late', False):
+                        filtered.append(sub)
+                else:
+                    # 旧格式：平面数据
+                    if not sub.get('is_late', False):
+                        filtered.append(sub)
+            self.filtered_submissions = filtered
         elif status_filter == "逾期":
-            self.filtered_submissions = [
-                sub for sub in self.filtered_submissions
-                if sub['is_late']
-            ]
+            filtered = []
+            for sub in self.filtered_submissions:
+                if isinstance(sub, dict) and 'primary_submission' in sub:
+                    # 新格式：分组数据
+                    if sub['primary_submission'].get('is_late', False):
+                        filtered.append(sub)
+                else:
+                    # 旧格式：平面数据
+                    if sub.get('is_late', False):
+                        filtered.append(sub)
+            self.filtered_submissions = filtered
         elif status_filter != "全部状态":
             target_code = None
             for code, text in self.STATUS_MAP.items():
                 if text == status_filter:
                     target_code = code
                     break
-            
+
             if target_code:
-                self.filtered_submissions = [
-                    sub for sub in self.filtered_submissions
-                    if sub.get('status') == target_code
-                ]
+                filtered = []
+                for sub in self.filtered_submissions:
+                    if isinstance(sub, dict) and 'primary_submission' in sub:
+                        # 新格式：分组数据
+                        if sub['primary_submission'].get('status') == target_code:
+                            filtered.append(sub)
+                    else:
+                        # 旧格式：平面数据
+                        if sub.get('status') == target_code:
+                            filtered.append(sub)
+                self.filtered_submissions = filtered
 
         self.refresh_table()
         self.update_status_info()
 
     def on_row_double_clicked(self, row_data):
-        """处理行双击：展示抽屉"""
-        # 寻找对应的原始数据
-        submission = None
-        for sub in self.all_submissions:
-            if str(sub['student_id']) == str(row_data.get('学号')) and \
-               sub['assignment_name'] == row_data.get('作业'):
-                submission = sub
-                break
-        
-        if submission:
+        """
+        处理行双击：展示抽屉
+
+        Args:
+            row_data: 行数据字典，可能来自 CollapsibleRow 或传统表格
+        """
+        # 处理来自 CollapsibleRow 的数据（新格式）
+        if 'student_id' in row_data and 'student_name' in row_data:
+            submission = row_data
+            details = {
+                "学号": submission.get('student_id', ''),
+                "姓名": submission.get('student_name', ''),
+                "作业": submission.get('assignment_name', ''),
+                "收件时间": self._format_time(submission.get('received_time')),
+                "提交时间": self._format_time(submission.get('submission_time')),
+                "状态": self._format_status(submission),
+                "本地路径": submission.get('local_path') or "未下载"
+            }
+        else:
+            # 处理来自传统表格的数据（旧格式，保持向后兼容）
+            submission = None
+            for sub in self.all_submissions:
+                if str(sub['student_id']) == str(row_data.get('学号')) and \
+                   sub['assignment_name'] == row_data.get('作业'):
+                    submission = sub
+                    break
+
+            if not submission:
+                return
+
             details = {
                 "学号": submission['student_id'],
                 "姓名": submission['name'],
@@ -572,30 +800,104 @@ class MainWindow(QMainWindow):
                 "状态": row_data.get('状态'),
                 "本地路径": submission['local_path'] or "未下载"
             }
-            
-            # 检查是否有缓存的正文
-            body = submission.get('body')
-            if not body:
-                # 尝试从数据库加载（如果之前保存过）
-                if submission.get('id'):
-                    db_sub = db.get_submission_by_id(submission['id'])
-                    if db_sub and hasattr(db_sub, 'body') and db_sub.body:
-                        body = db_sub.body
-                        submission['body'] = body
 
-            # 如果还是没有，异步拉取
-            if not body:
-                self.drawer.set_details(details, "正在从服务器拉取正文...")
-                self.drawer.open_drawer()
-                # 启动线程拉取
-                threading.Thread(
-                    target=self.fetch_email_body, 
-                    args=(submission, details), 
-                    daemon=True
-                ).start()
-            else:
-                self.drawer.set_details(details, body)
-                self.drawer.open_drawer()
+        # 检查是否有缓存的正文
+        body = submission.get('body')
+        if not body:
+            # 尝试从数据库加载（如果之前保存过）
+            if submission.get('id'):
+                db_sub = db.get_submission_by_id(submission['id'])
+                if db_sub and hasattr(db_sub, 'body') and db_sub.body:
+                    body = db_sub.body
+                    submission['body'] = body
+
+        # 如果还是没有，异步拉取
+        if not body:
+            self.drawer.set_details(details, "正在从服务器拉取正文...")
+            self.drawer.open_drawer()
+            # 启动线程拉取
+            threading.Thread(
+                target=self.fetch_email_body,
+                args=(submission, details),
+                daemon=True
+            ).start()
+        else:
+            self.drawer.set_details(details, body)
+            self.drawer.open_drawer()
+
+    def on_child_record_clicked(self, child_data: dict):
+        """
+        处理子记录点击事件
+
+        Args:
+            child_data: 子记录数据字典，包含 student_id, student_name, assignment_name 等
+        """
+        # 子记录数据格式与主记录类似，直接使用相同的处理逻辑
+        details = {
+            "学号": child_data.get('student_id', ''),
+            "姓名": child_data.get('student_name', ''),
+            "作业": child_data.get('assignment_name', ''),
+            "收件时间": self._format_time(child_data.get('received_time')),
+            "提交时间": self._format_time(child_data.get('submission_time')),
+            "状态": self._format_status(child_data),
+            "本地路径": child_data.get('local_path') or "未下载"
+        }
+
+        # 检查是否有缓存的正文
+        body = child_data.get('body')
+        if not body:
+            # 尝试从数据库加载
+            if child_data.get('id'):
+                db_sub = db.get_submission_by_id(child_data['id'])
+                if db_sub and hasattr(db_sub, 'body') and db_sub.body:
+                    body = db_sub.body
+                    child_data['body'] = body
+
+        # 如果还是没有，异步拉取
+        if not body:
+            self.drawer.set_details(details, "正在从服务器拉取正文...")
+            self.drawer.open_drawer()
+            # 启动线程拉取
+            threading.Thread(
+                target=self.fetch_email_body,
+                args=(child_data, details),
+                daemon=True
+            ).start()
+        else:
+            self.drawer.set_details(details, body)
+            self.drawer.open_drawer()
+
+    def _format_time(self, time_value) -> str:
+        """
+        格式化时间值为字符串
+
+        Args:
+            time_value: 时间值（datetime、字符串或None）
+
+        Returns:
+            格式化的时间字符串
+        """
+        if not time_value:
+            return "未知"
+        if isinstance(time_value, datetime):
+            return time_value.strftime('%Y-%m-%d %H:%M:%S')
+        return str(time_value)
+
+    def _format_status(self, record: dict) -> str:
+        """
+        格式化状态文本
+
+        Args:
+            record: 记录数据字典
+
+        Returns:
+            格式化的状态文本
+        """
+        status_code = record.get('status', 'pending')
+        status_text = self.STATUS_MAP.get(status_code, '未知')
+        if record.get('is_late'):
+            status_text += " (逾期)"
+        return status_text
 
     def fetch_email_body(self, submission, details):
         """后台拉取邮件正文"""
@@ -676,12 +978,28 @@ class MainWindow(QMainWindow):
             # 获取学号和作业名作为标识
             student_id = self.table.item(row, 0).text()
             assignment_name = self.table.item(row, 2).text()
-            
+
             for sub in self.all_submissions:
-                if str(sub['student_id']) == student_id and sub['assignment_name'] == assignment_name:
-                    submissions.append(sub)
+                target_submission = None
+                target_student_id = ''
+                target_assignment_name = ''
+
+                if isinstance(sub, dict) and 'primary_submission' in sub:
+                    # 新格式：分组数据
+                    primary = sub['primary_submission']
+                    target_student_id = str(primary.get('student_id', ''))
+                    target_assignment_name = primary.get('assignment_name', '')
+                    target_submission = primary
+                else:
+                    # 旧格式：平面数据
+                    target_student_id = str(sub.get('student_id', ''))
+                    target_assignment_name = sub.get('assignment_name', '')
+                    target_submission = sub
+
+                if target_student_id == student_id and target_assignment_name == assignment_name:
+                    submissions.append(target_submission)
                     break
-        
+
         if submissions:
             popup = BatchPopup(self, submissions, on_update=lambda f, v: self.handle_batch_update(submissions, f, v))
             popup.exec()
@@ -728,7 +1046,7 @@ class MainWindow(QMainWindow):
             db_session.remove()
 
     def on_batch_download(self):
-        """批量下载附件"""
+        """批量下载附件 - 鲁棒版本 (支持跨文件夹查找)"""
         submissions = self.get_selected_submissions()
         if not submissions:
             QMessageBox.information(self, "提示", "请先选择要下载的记录")
@@ -739,39 +1057,87 @@ class MainWindow(QMainWindow):
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
         success_count = 0
+        from config.settings import settings
         
         try:
-            if not mail_parser.connect():
-                QMessageBox.critical(self, "错误", "无法连接邮件服务器")
-                return
+            # 预先连接两个解析器
+            mail_parser_inbox.connect()
+            mail_parser_target.connect()
 
             for idx, sub in enumerate(submissions):
-                self.statusBar().showMessage(f"正在下载 ({idx+1}/{len(submissions)}): {sub['name']}")
+                self.statusBar().showMessage(f"正在处理 ({idx+1}/{len(submissions)}): {sub['name']}")
                 QApplication.processEvents()
                 
-                try:
-                    email_data = mail_parser.parse_email(sub['email_uid'])
-                    if not email_data or not email_data.get('attachments'):
-                        continue
+                email_uid = sub.get('email_uid')
+                message_id = sub.get('message_id')
+                email_data = None
+                
+                # --- 策略 1: 在 INBOX 中查找 (针对新邮件) ---
+                if email_uid:
+                    print(f"[DOWNLOAD] Strategy 1: Fetching UID {email_uid} in INBOX")
+                    # 确保选择了 INBOX
+                    mail_parser_inbox.imap.select_folder('INBOX')
+                    email_data = mail_parser_inbox.parse_email(email_uid)
+                
+                # --- 策略 2: 在 TARGET_FOLDER 中查找 (针对已处理邮件) ---
+                if not email_data and email_uid:
+                    print(f"[DOWNLOAD] Strategy 2: Fetching UID {email_uid} in {settings.TARGET_FOLDER}")
+                    if mail_parser_target.imap.select_folder(settings.TARGET_FOLDER):
+                        email_data = mail_parser_target.parse_email(email_uid)
 
-                    local_path = storage_manager.store_submission(
-                        assignment_name=sub['assignment_name'],
-                        student_id=sub['student_id'],
-                        name=sub['name'],
-                        attachments=email_data['attachments']
-                    )
+                # --- 策略 3: 使用 Message-ID 跨文件夹查找 ---
+                if not email_data and message_id:
+                    print(f"[DOWNLOAD] Strategy 3: Searching Message-ID {message_id}")
+                    # 先看目标文件夹
+                    if mail_parser_target.imap.select_folder(settings.TARGET_FOLDER):
+                        new_uid = mail_parser_target.imap.find_email_by_message_id(message_id, settings.TARGET_FOLDER)
+                        if new_uid:
+                            email_data = mail_parser_target.parse_email(new_uid)
+                            if email_data:
+                                print(f"[DOWNLOAD] Found by Message-ID in {settings.TARGET_FOLDER}, updating UID: {email_uid} -> {new_uid}")
+                                if sub.get('id'):
+                                    db.update_submission_field(sub['id'], 'email_uid', new_uid)
+                                    sub['email_uid'] = new_uid
 
-                    if local_path:
-                        db.update_submission_local_path(sub['id'], local_path)
-                        new_status = 'completed' if sub.get('is_replied') else 'unreplied'
-                        db.update_submission_status(sub['id'], new_status)
-                        success_count += 1
-                except:
-                    pass
+                    # 再看收件箱
+                    if not email_data:
+                        new_uid = mail_parser_inbox.imap.find_email_by_message_id(message_id, 'INBOX')
+                        if new_uid:
+                            email_data = mail_parser_inbox.parse_email(new_uid)
+                            if email_data:
+                                print(f"[DOWNLOAD] Found by Message-ID in INBOX, updating UID: {email_uid} -> {new_uid}")
+                                if sub.get('id'):
+                                    db.update_submission_field(sub['id'], 'email_uid', new_uid)
+                                    sub['email_uid'] = new_uid
+
+                # --- 处理下载 ---
+                if email_data and email_data.get('attachments'):
+                    try:
+                        local_path = storage_manager.store_submission(
+                            assignment_name=sub['assignment_name'],
+                            student_id=sub['student_id'],
+                            name=sub['name'],
+                            attachments=email_data['attachments']
+                        )
+
+                        if local_path:
+                            if sub.get('id'):
+                                db.update_submission_local_path(sub['id'], local_path)
+                                new_status = 'completed' if sub.get('is_replied') else 'unreplied'
+                                db.update_submission_status(sub['id'], new_status)
+                            
+                            sub['local_path'] = local_path
+                            success_count += 1
+                    except Exception as e:
+                        print(f"[DOWNLOAD] Error storing attachments: {e}")
+                else:
+                    print(f"[DOWNLOAD] Failed to find email or attachments for {sub['name']}")
 
             self.load_data(self.current_page)
             QMessageBox.information(self, "完成", f"下载完成！成功: {success_count}/{len(submissions)}")
-            mail_parser.disconnect()
+            
+            mail_parser_inbox.disconnect()
+            mail_parser_target.disconnect()
         finally:
             QApplication.restoreOverrideCursor()
             self.statusBar().showMessage("准备就绪")
@@ -1028,17 +1394,35 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("刷新失败")
 
     def get_selected_submissions(self) -> List[dict]:
-        """从表格选择中获取数据对象"""
+        """
+        从表格选择中获取数据对象
+
+        支持新旧两种数据格式
+        """
         selected_rows = self.table.selectionModel().selectedRows()
         result = []
+
         for index in selected_rows:
             row = index.row()
             student_id = self.table.item(row, 0).text()
             assignment_name = self.table.item(row, 2).text()
+
+            # 处理分组格式数据
             for sub in self.all_submissions:
-                if str(sub['student_id']) == student_id and sub['assignment_name'] == assignment_name:
-                    result.append(sub)
-                    break
+                if isinstance(sub, dict) and 'primary_submission' in sub:
+                    # 新格式：分组数据
+                    primary = sub['primary_submission']
+                    if str(primary.get('student_id', '')) == str(student_id) and \
+                       primary.get('assignment_name', '') == assignment_name:
+                        result.append(primary)
+                        break
+                else:
+                    # 旧格式：平面数据
+                    if str(sub.get('student_id', '')) == str(student_id) and \
+                       sub.get('assignment_name', '') == assignment_name:
+                        result.append(sub)
+                        break
+
         return result
 
     def start_background_monitoring(self):
