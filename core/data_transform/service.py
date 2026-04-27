@@ -107,6 +107,7 @@ class DataTransformService:
                 'child_count': len(children),
                 'version_count': len(version_children),
                 'possible_dup_count': len(possible_dup_children),
+                'is_collapsible': len(children) > 0,
                 'children': formatted_children
             })
 
