@@ -5,3 +5,4 @@ from .data_table import DataTable
 from .drawer import Drawer
 from .pagination import PaginationBar
 from .progress_dialog import ProgressDialog
+from .collapsible_row import CollapsibleRow
