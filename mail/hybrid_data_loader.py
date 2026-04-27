@@ -187,7 +187,7 @@ class HybridDataLoader:
                     'local_path': child.local_path,
                     'status': getattr(child, 'status', 'pending'),
                     'parent_id': child.parent_id,
-                    'relation_type': child.relation_type.value if child.relation_type else None,
+                    'relation_type': child.relation_type if child.relation_type else None,
                     'is_primary': child.is_primary,
                     'version': child.version,
                     'is_latest': child.is_latest,
