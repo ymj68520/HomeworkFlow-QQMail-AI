@@ -424,7 +424,25 @@ class CollapsibleRow(QWidget):
         Args:
             event: 鼠标事件
         """
-        self.rowDoubleClicked.emit(self.data)
+        # 发送数据时，提取主记录（兼容 primary_submission 嵌套格式）
+        data_to_send = self.data
+        if 'primary_submission' in self.data:
+            # 新格式：提取 primary_submission 作为顶层字段
+            primary = self.data.get('primary_submission', {})
+            data_to_send = {
+                **primary,
+                # 保留折叠所需的信息
+                'is_collapsible': self.data.get('is_collapsible', False),
+                'child_count': self.data.get('child_count', 0),
+                'version_count': self.data.get('version_count', 0),
+                'possible_dup_count': self.data.get('possible_dup_count', 0),
+                'children': self.data.get('children', [])
+            }
+        else:
+            # 旧格式：直接使用
+            data_to_send = self.data
+
+        self.rowDoubleClicked.emit(data_to_send)
 
     def update_data(self, data: Dict[str, Any]):
         """
