@@ -18,6 +18,16 @@ class FuzzyMatcher:
     - 分类重复关系类型
     """
 
+    # Match scoring weights
+    EXACT_MATCH_SCORE = 0.7
+    SIMILAR_ID_SCORE = 0.4
+    NAME_SIMILARITY_WEIGHT = 0.5
+
+    # Similarity thresholds
+    ID_SIMILARITY_THRESHOLD = 0.8
+    NAME_SIMILARITY_THRESHOLD = 0.6
+    MIN_DUPLICATE_SCORE = 0.3
+
     def __init__(self, db: AsyncDatabaseOperations):
         """初始化模糊匹配器
 
@@ -83,7 +93,7 @@ class FuzzyMatcher:
                 )
 
                 # 只保留有一定匹配度的提交
-                if score > 0.3:  # 最低阈值
+                if score > self.MIN_DUPLICATE_SCORE:  # 最低阈值
                     scored_submissions.append((submission, score))
 
             # 按匹配分数降序排序
@@ -151,20 +161,20 @@ class FuzzyMatcher:
 
         # 学号匹配
         if student_id1 == student_id2:
-            score += 0.7
+            score += self.EXACT_MATCH_SCORE
         else:
             # 学号相似度
             student_id_sim = self._string_similarity(student_id1, student_id2)
-            if student_id_sim > 0.8:
-                score += 0.4
+            if student_id_sim > self.ID_SIMILARITY_THRESHOLD:
+                score += self.SIMILAR_ID_SCORE
 
         # 姓名匹配
         if name1 == name2:
-            score += 0.7
+            score += self.EXACT_MATCH_SCORE
         else:
             # 姓名相似度
             name_sim = self._string_similarity(name1, name2)
-            score += name_sim * 0.5
+            score += name_sim * self.NAME_SIMILARITY_WEIGHT
 
         # 确保分数在 0.0 - 1.0 之间
         return min(score, 1.0)
@@ -205,9 +215,9 @@ class FuzzyMatcher:
 
         # 检查是否为可能重复（至少一个字段匹配或高度相似）
         student_id_match = (student_id1 == student_id2 or
-                           self._string_similarity(student_id1, student_id2) > 0.8)
+                           self._string_similarity(student_id1, student_id2) > self.ID_SIMILARITY_THRESHOLD)
         name_match = (name1 == name2 or
-                     self._string_similarity(name1, name2) > 0.6)
+                     self._string_similarity(name1, name2) > self.NAME_SIMILARITY_THRESHOLD)
 
         if student_id_match or name_match:
             return 'possible_dup'
