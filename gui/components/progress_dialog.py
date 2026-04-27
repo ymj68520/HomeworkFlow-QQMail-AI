@@ -80,7 +80,10 @@ class ProgressDialog(QDialog):
         """Mark operation as complete, change cancel button to close"""
         if self.cancel_button:
             self.cancel_button.setText("关闭")
-            self.cancel_button.clicked.disconnect()
+            try:
+                self.cancel_button.clicked.disconnect()
+            except TypeError:
+                pass  # Wasn't connected
             self.cancel_button.clicked.connect(self.accept)
             self.cancel_button.setEnabled(True)
 
