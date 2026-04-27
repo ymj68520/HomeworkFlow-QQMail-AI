@@ -145,7 +145,7 @@ class DeduplicationService:
         """
         # Level 1: 尝试精确匹配
         primary = await self.group_manager.get_or_create_primary(
-            student_id, name, assignment_name
+            student_id, assignment_name
         )
 
         if primary:
@@ -171,16 +171,17 @@ class DeduplicationService:
 
         if possible_duplicates:
             # 找到可能的重复 - 返回第一个作为建议
-            duplicate = possible_duplicates[0]
+            # find_possible_duplicates returns List[Submission], not dict
+            best_match = possible_duplicates[0]
 
             return DeduplicationResult(
                 is_duplicate=True,
                 duplicate_type='fuzzy_match',
                 action='review',
-                submission=duplicate['submission'],
-                message=f"Possible duplicate found: {duplicate['similarity']:.2f} similar to "
-                       f"{duplicate.get('relation_type', 'unknown')}. "
-                       f"Existing: {duplicate['submission'].student_id} - {duplicate['submission'].assignment_name}. "
+                submission=best_match,
+                message=f"Possible duplicate found. "
+                       f"Existing: {best_match.student.student_id if best_match.student else 'N/A'} - "
+                       f"{best_match.student.name if best_match.student else 'N/A'}. "
                        f"New: {student_id} - {name} - {assignment_name}"
             )
 

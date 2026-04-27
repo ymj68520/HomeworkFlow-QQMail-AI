@@ -215,6 +215,10 @@ class AssignmentWorkflow:
             elif dedup_result.duplicate_type == 'fuzzy_match':
                 print(f"Possible duplicate detected: {dedup_result.message}")
                 # 对于模糊匹配，暂时当作新提交处理（可以后续添加人工审核逻辑）
+                # 理由：模糊匹配表示学号或姓名相似但不完全匹配，可能是：
+                # 1. 不同学生提交（需要人工确认）
+                # 2. 输入错误（需要学生确认）
+                # 为保证系统可用性，暂按新提交处理，后续可添加审核队列
                 print("Proceeding as new submission (fuzzy match)")
 
         # 2. 保存附件到本地
