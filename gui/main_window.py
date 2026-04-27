@@ -5,8 +5,8 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, 
-    QApplication, QMessageBox, QHeaderView, QAbstractItemView
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
+    QApplication, QMessageBox, QAbstractItemView, QPushButton
 )
 from PySide6.QtCore import Qt, QTimer, Signal
 
@@ -17,7 +17,6 @@ from gui.components.batch_popup import BatchPopup
 from gui.components.pagination import PaginationBar
 from database.operations import db
 from database.models import db_session
-from mail.smart_data_loader import smart_data_loader
 from mail.hybrid_data_loader import hybrid_data_loader
 from mail.target_folder_loader import target_folder_loader
 from mail.parser import mail_parser_inbox as mail_parser
@@ -118,6 +117,13 @@ class MainWindow(QMainWindow):
         # 状态栏
         self.statusBar().showMessage("准备就绪")
 
+        # 刷新按钮
+        self.refresh_btn = QPushButton("刷新")
+        self.refresh_btn.setObjectName("RefreshButton")
+        self.refresh_btn.setFixedSize(80, 24)
+        self.refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.statusBar().addPermanentWidget(self.refresh_btn)
+
     def setup_connections(self):
         """绑定信号与槽"""
         # 搜索防抖
@@ -154,7 +160,10 @@ class MainWindow(QMainWindow):
         # New feature buttons
         self.sidebar.btn_smart_retry.clicked.connect(self.on_smart_retry)
         self.sidebar.btn_batch_reanalyze.clicked.connect(self.on_batch_reanalyze)
-        
+
+        # 刷新按钮
+        self.refresh_btn.clicked.connect(self.on_refresh_clicked)
+
         # 表格右键菜单
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.on_context_menu)
@@ -979,6 +988,44 @@ class MainWindow(QMainWindow):
         # Start background thread
         thread = threading.Thread(target=run_batch_reanalyze, daemon=True)
         thread.start()
+
+    def on_refresh_clicked(self):
+        """处理刷新按钮点击事件 - 重置筛选条件并重新加载数据"""
+        try:
+            # 显示加载状态
+            self.statusBar().showMessage("正在刷新...")
+            QApplication.processEvents()
+
+            # 重置筛选条件到默认值
+            self.sidebar.student_filter.blockSignals(True)
+            self.sidebar.assignment_filter.blockSignals(True)
+            self.sidebar.status_filter.blockSignals(True)
+
+            self.sidebar.student_filter.setCurrentIndex(0)
+            self.sidebar.assignment_filter.setCurrentIndex(0)
+            self.sidebar.status_filter.setCurrentIndex(0)
+
+            self.sidebar.student_filter.blockSignals(False)
+            self.sidebar.assignment_filter.blockSignals(False)
+            self.sidebar.status_filter.blockSignals(False)
+
+            # 清空搜索框
+            self.sidebar.search_input.blockSignals(True)
+            self.sidebar.search_input.clear()
+            self.sidebar.search_input.blockSignals(False)
+
+            # 清除缓存并重新加载数据
+            hybrid_data_loader.invalidate_cache()
+            self.load_data(page=1, force_refresh=True)
+
+            # 显示完成状态
+            self.statusBar().showMessage("刷新完成")
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"刷新失败: {str(e)}")
+            self.statusBar().showMessage("刷新失败")
 
     def get_selected_submissions(self) -> List[dict]:
         """从表格选择中获取数据对象"""
