@@ -117,7 +117,7 @@ class Sidebar(QFrame):
         self.btn_reply = QPushButton("批量回复邮件")
         self.btn_delete = QPushButton("批量删除记录")
         self.btn_export = QPushButton("导出 Excel")
-        
+
         # 样式微调
         btn_style = f"""
             QPushButton {{
@@ -134,6 +134,59 @@ class Sidebar(QFrame):
         for btn in [self.btn_download, self.btn_reply, self.btn_delete, self.btn_export]:
             btn.setStyleSheet(btn_style)
             batch_section.add_widget(btn)
+
+        # Smart Retry Button
+        self.btn_smart_retry = QPushButton("智能重试")
+        self.btn_smart_retry.setMinimumHeight(40)
+        self.btn_smart_retry.setStyleSheet("""
+            QPushButton {
+                background-color: #f59e0b;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-size: 14px;
+                font-weight: 600;
+                padding: 8px 16px;
+            }
+            QPushButton:hover {
+                background-color: #d97706;
+            }
+            QPushButton:pressed {
+                background-color: #b45309;
+            }
+            QPushButton:disabled {
+                background-color: #fed7aa;
+                color: #9ca3af;
+            }
+        """)
+        batch_section.add_widget(self.btn_smart_retry)
+
+        # Batch Re-analyze Button
+        self.btn_batch_reanalyze = QPushButton("批量AI重析")
+        self.btn_batch_reanalyze.setMinimumHeight(40)
+        self.btn_batch_reanalyze.setEnabled(False)  # Disabled until selection
+        self.btn_batch_reanalyze.setStyleSheet("""
+            QPushButton {
+                background-color: #8b5cf6;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-size: 14px;
+                font-weight: 600;
+                padding: 8px 16px;
+            }
+            QPushButton:hover {
+                background-color: #7c3aed;
+            }
+            QPushButton:pressed {
+                background-color: #6d28d9;
+            }
+            QPushButton:disabled {
+                background-color: #ddd6fe;
+                color: #9ca3af;
+            }
+        """)
+        batch_section.add_widget(self.btn_batch_reanalyze)
 
         # 邮件回复开关逻辑
         self.btn_reply.setEnabled(settings.ENABLE_REPLY)
