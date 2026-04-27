@@ -16,6 +16,13 @@ def app():
         app = QApplication.instance()
     yield app
 
+@pytest.fixture(autouse=True)
+def reset_window_state(main_window):
+    """Reset window state between tests to prevent interference"""
+    yield
+    main_window.table.clearSelection()
+    main_window.update_status_info()
+
 @pytest.fixture
 def main_window(app):
     window = MainWindow()
@@ -38,10 +45,17 @@ class TestSmartRetryIntegration:
 
     def test_batch_reanalyze_button_enabled_with_selection(self, main_window):
         """Test that batch re-analyze button becomes enabled when rows selected"""
+        # Add mock data to table first
+        mock_data = [
+            {'id': 1, 'student_id': '001', 'name': 'Test Student', 'status': 'completed'}
+        ]
+        main_window.table.set_data_bulk(mock_data)
+
         # Simulate row selection
         main_window.table.selectRow(0)
         main_window.update_status_info()
-        # Note: This depends on having data loaded, may need mock data
+        # Verify button becomes enabled
+        assert main_window.sidebar.btn_batch_reanalyze.isEnabled() is True
 
     def test_smart_retry_shows_message_for_no_abnormal(self, main_window):
         """Test smart retry shows info message when no abnormal entries"""
@@ -65,9 +79,9 @@ class TestSmartRetryIntegration:
                 mock_confirm.return_value = QMessageBox.No
 
                 with patch.object(retry_handler, 'smart_retry_page', new=AsyncMock()) as mock_retry:
-                    # Don't actually run - just verify setup
-                    # The actual call happens in a background thread
+                    # Verify the handler method exists and is callable
                     assert hasattr(retry_handler, 'smart_retry_page')
+                    assert callable(retry_handler.smart_retry_page)
 
 class TestBatchReanalyzeIntegration:
     """Integration tests for batch re-analyze feature"""
@@ -79,6 +93,9 @@ class TestBatchReanalyzeIntegration:
                 main_window.on_batch_reanalyze()
                 # Should show message about selecting records
                 mock_info.assert_called_once()
+                # Verify message content
+                args = mock_info.call_args[0]
+                assert "请选择要重新分析的记录" in args[2] or "选择" in args[2]
 
     def test_calls_retry_handler_with_selection(self, main_window):
         """Test that batch re-analyze calls retry_handler with selected submissions"""
@@ -92,4 +109,6 @@ class TestBatchReanalyzeIntegration:
 
                 # Verify setup is correct
                 assert len(mock_selection) == 1
+                assert mock_selection[0]['id'] == 1
                 assert hasattr(retry_handler, 'batch_reanalyze')
+                assert callable(retry_handler.batch_reanalyze)
