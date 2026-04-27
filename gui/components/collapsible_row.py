@@ -1,7 +1,7 @@
 """可折叠行组件 - 用于展示主记录和子记录（历史版本和可能重复）"""
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton
+    QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QCheckBox
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QMouseEvent
@@ -81,6 +81,17 @@ class CollapsibleRow(QWidget):
         layout = QHBoxLayout(frame)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(12)
+
+        # 复选框
+        self.checkbox = QCheckBox()
+        self.checkbox.setFixedWidth(24)
+        self.checkbox.setStyleSheet(f"""
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+            }}
+        """)
+        layout.addWidget(self.checkbox)
 
         # 学号
         layout.addWidget(QLabel(self._format_field('student_id')))
@@ -464,3 +475,21 @@ class CollapsibleRow(QWidget):
             self.primary_row.deleteLater()
             self.primary_row = self._create_primary_row()
             main_layout.insertWidget(0, self.primary_row)
+
+    def is_checked(self) -> bool:
+        """
+        获取复选框状态
+
+        Returns:
+            是否选中
+        """
+        return self.checkbox.isChecked()
+
+    def set_checked(self, checked: bool):
+        """
+        设置复选框状态
+
+        Args:
+            checked: 是否选中
+        """
+        self.checkbox.setChecked(checked)
