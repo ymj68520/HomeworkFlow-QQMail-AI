@@ -1,5 +1,6 @@
 from PySide6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QPushButton, QScrollArea, QWidget, QGridLayout)
+                             QPushButton, QScrollArea, QWidget, QGridLayout,
+                             QLineEdit, QComboBox)
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, Signal, QPoint
 from gui.styles import palette
 
@@ -9,12 +10,17 @@ class Drawer(QFrame):
     包含动画控制、详情展示区域和正文显示区域
     """
     closed = Signal()
+    save_requested = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("Drawer")
         self.setFixedWidth(450)
         self._is_open = False
+        self.is_edit_mode = False
+        self.edit_widgets = {}
+        self.current_details = {}
+        self.current_body = ""
         self._init_ui()
         self._apply_style()
         
@@ -38,6 +44,24 @@ class Drawer(QFrame):
 
         self.title_label = QLabel("详情预览")
         self.title_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {palette.TEXT_PRIMARY};")
+
+        self.edit_btn = QPushButton("📝 编辑")
+        self.edit_btn.setFixedSize(80, 32)
+        self.edit_btn.setCursor(Qt.PointingHandCursor)
+        self.edit_btn.clicked.connect(self.toggle_edit_mode)
+        self.edit_btn.setStyleSheet(f"""
+            QPushButton {{
+                border: 1px solid {palette.BORDER};
+                border-radius: 4px;
+                color: {palette.TEXT_SECONDARY};
+                font-size: 13px;
+                background-color: transparent;
+            }}
+            QPushButton:hover {{
+                background-color: {palette.BORDER}44;
+                color: {palette.TEXT_PRIMARY};
+            }}
+        """)
         
         self.close_btn = QPushButton("✕")
         self.close_btn.setFixedSize(32, 32)
@@ -59,6 +83,8 @@ class Drawer(QFrame):
 
         header_layout.addWidget(self.title_label)
         header_layout.addStretch()
+        header_layout.addWidget(self.edit_btn)
+        header_layout.addSpacing(8)
         header_layout.addWidget(self.close_btn)
         self.main_layout.addWidget(header)
         
@@ -116,32 +142,78 @@ class Drawer(QFrame):
             }}
         """)
 
+    def toggle_edit_mode(self):
+        """切换编辑模式"""
+        if self.is_edit_mode:
+            # 收集数据并保存
+            data = {}
+            for key, widget in self.edit_widgets.items():
+                if isinstance(widget, QLineEdit):
+                    data[key] = widget.text()
+                elif isinstance(widget, QComboBox):
+                    data[key] = widget.currentText()
+            
+            self.save_requested.emit(data)
+            self.is_edit_mode = False
+            self.edit_btn.setText("📝 编辑")
+        else:
+            self.is_edit_mode = True
+            self.edit_btn.setText("💾 保存")
+            
+        # 重新渲染详情区域
+        self.set_details(self.current_details, self.current_body)
+
     def set_details(self, details: dict, body: str = ""):
         """
         更新展示内容
         details: 键值对字典
         body: 长文本内容
         """
+        self.current_details = details
+        self.current_body = body
+        
         # 清除旧的详情
         while self.details_layout.count():
             child = self.details_layout.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
-        
+
+        self.edit_widgets = {}
+
         # 重新填充详情
         row = 0
         for key, value in details.items():
             key_lbl = QLabel(f"{key}:")
             key_lbl.setStyleSheet(f"color: {palette.TEXT_SECONDARY}; font-weight: 500;")
-            
-            val_lbl = QLabel(str(value))
-            val_lbl.setWordWrap(True)
-            val_lbl.setStyleSheet(f"color: {palette.TEXT_PRIMARY};")
-            
             self.details_layout.addWidget(key_lbl, row, 0, Qt.AlignTop)
-            self.details_layout.addWidget(val_lbl, row, 1, Qt.AlignTop)
-            row += 1
+
+            if self.is_edit_mode and key in ["学号", "姓名", "作业", "状态"]:
+                if key == "状态":
+                    widget = QComboBox()
+                    widget.addItems(["待分析", "已下载", "已通过", "未通过", "重复提交"])
+                    widget.setCurrentText(str(value))
+                else:
+                    widget = QLineEdit(str(value))
+                
+                widget.setStyleSheet(f"""
+                    QLineEdit, QComboBox {{
+                        border: 1px solid {palette.BORDER};
+                        border-radius: 4px;
+                        padding: 4px;
+                        color: {palette.TEXT_PRIMARY};
+                        background-color: {palette.SURFACE};
+                    }}
+                """)
+                self.details_layout.addWidget(widget, row, 1, Qt.AlignTop)
+                self.edit_widgets[key] = widget
+            else:
+                val_lbl = QLabel(str(value))
+                val_lbl.setWordWrap(True)
+                val_lbl.setStyleSheet(f"color: {palette.TEXT_PRIMARY};")
+                self.details_layout.addWidget(val_lbl, row, 1, Qt.AlignTop)
             
+            row += 1
+
         # 设置正文
         self.body_text.setText(body or "无正文内容")
 
