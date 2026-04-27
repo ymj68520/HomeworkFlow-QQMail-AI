@@ -160,7 +160,10 @@ class MainWindow(QMainWindow):
         # New feature buttons
         self.sidebar.btn_smart_retry.clicked.connect(self.on_smart_retry)
         self.sidebar.btn_batch_reanalyze.clicked.connect(self.on_batch_reanalyze)
-        
+
+        # 刷新按钮
+        self.refresh_btn.clicked.connect(self.on_refresh_clicked)
+
         # 表格右键菜单
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.on_context_menu)
