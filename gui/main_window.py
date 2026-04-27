@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QApplication, QMessageBox, QHeaderView, QAbstractItemView, QPushButton
+    QApplication, QMessageBox, QAbstractItemView, QPushButton
 )
 from PySide6.QtCore import Qt, QTimer, Signal
 
@@ -17,7 +17,6 @@ from gui.components.batch_popup import BatchPopup
 from gui.components.pagination import PaginationBar
 from database.operations import db
 from database.models import db_session
-from mail.smart_data_loader import smart_data_loader
 from mail.hybrid_data_loader import hybrid_data_loader
 from mail.target_folder_loader import target_folder_loader
 from mail.parser import mail_parser_inbox as mail_parser
