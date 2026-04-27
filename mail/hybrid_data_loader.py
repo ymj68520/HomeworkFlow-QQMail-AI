@@ -169,17 +169,23 @@ class HybridDataLoader:
         if primary_ids:
             # 查询所有这些主记录的子记录
             from database.models import Submission
+            from sqlalchemy.orm import joinedload
             child_records = db.session.query(Submission).filter(
                 Submission.parent_id.in_(primary_ids)
+            ).options(
+                joinedload(Submission.student),
+                joinedload(Submission.assignment)
             ).all()
 
             # 将子记录转换为字典格式并添加
             for child in child_records:
                 child_dict = {
                     'id': child.id,
-                    'student_id': child.student.student_id if child.student else "Unknown",
+                    'student_id': child.student_id if hasattr(child, 'student_id') else "Unknown",
                     'name': child.student.name if child.student else "Unknown",
+                    'student_name': child.student.name if child.student else "Unknown",  # 保持一致性
                     'assignment_name': child.assignment.name if child.assignment else "Unknown",
+                    'assignment_id': child.assignment_id if hasattr(child, 'assignment_id') else None,
                     'submission_time': child.submission_time,
                     'is_late': child.is_late,
                     'is_downloaded': child.is_downloaded,
@@ -219,6 +225,7 @@ class HybridDataLoader:
                 'id': db_record.id,
                 'student_id': db_record.student.student_id if db_record.student else "Unknown",
                 'name': db_record.student.name if db_record.student else "Unknown",
+                'student_name': db_record.student.name if db_record.student else "Unknown",  # 保持一致性
                 'email': db_record.student.email if db_record.student else db_record.sender_email,
                 'assignment_name': db_record.assignment.name if db_record.assignment else "Unknown",
                 'submission_time': db_record.submission_time,
@@ -252,6 +259,7 @@ class HybridDataLoader:
                 'id': None,
                 'student_id': temp_student_id,
                 'name': sender_name or temp_student_id,
+                'student_name': sender_name or temp_student_id,  # 保持一致性
                 'email': from_email,
                 'assignment_name': '待识别',
                 'submission_time': self._parse_date(email_data.get('date')),
