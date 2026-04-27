@@ -1,5 +1,7 @@
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QHBoxLayout
-from PySide6.QtCore import Signal
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel, QFrame, QHBoxLayout, QScrollArea, QSizePolicy
+)
+from PySide6.QtCore import Signal, Qt
 
 from gui.components.collapsible_row import CollapsibleRow
 from gui.styles import palette
@@ -24,6 +26,24 @@ class DataTable(QWidget):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
 
+        # 创建滚动区域
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+
+        # 滚动内容容器
+        self.scroll_content = QWidget()
+        self.scroll_content.setLayout(self.main_layout)
+        self.scroll_area.setWidget(self.scroll_content)
+
+        # 将滚动区域添加到主布局
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.addWidget(self.scroll_area)
+        self.setLayout(outer_layout)
+
     def _apply_style(self):
         # QSS 样式定义
         self.setStyleSheet(f"""
@@ -32,6 +52,11 @@ class DataTable(QWidget):
                 color: {palette.TEXT_PRIMARY};
             }}
         """)
+        # 为滚动内容设置大小策略
+        self.scroll_content.setSizePolicy(
+            QSizePolicy.Preferred,
+            QSizePolicy.Preferred
+        )
 
     def set_data(self, data_list: list):
         """

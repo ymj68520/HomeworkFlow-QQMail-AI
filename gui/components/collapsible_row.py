@@ -86,8 +86,9 @@ class CollapsibleRow(QWidget):
         layout.addWidget(QLabel(self._format_field('student_id')))
         layout.addWidget(self._create_separator())
 
-        # 姓名
-        layout.addWidget(QLabel(self._format_field('student_name')))
+        # 姓名（兼容 name 和 student_name 两种字段名）
+        name_value = self._format_field('name') if self._format_field('name') != '-' else self._format_field('student_name')
+        layout.addWidget(QLabel(name_value))
         layout.addWidget(self._create_separator())
 
         # 作业名称
