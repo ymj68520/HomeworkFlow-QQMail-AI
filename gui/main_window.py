@@ -160,9 +160,6 @@ class MainWindow(QMainWindow):
         # 刷新按钮
         self.refresh_btn.clicked.connect(self.on_refresh_clicked)
 
-        # 刷新按钮
-        self.refresh_btn.clicked.connect(self.on_refresh_clicked)
-
         # 表格右键菜单
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.on_context_menu)
