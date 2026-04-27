@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QFrame, QHBoxLayout, QScrollArea, QSizePolicy
+    QWidget, QVBoxLayout, QLabel, QFrame, QHBoxLayout, QScrollArea, QSizePolicy, QCheckBox
 )
 from PySide6.QtCore import Signal, Qt
 
@@ -17,6 +17,7 @@ class DataTable(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.collapsible_rows = []
+        self._selection_model = MockSelectionModel(self)
         self._init_ui()
         self._apply_style()
 
@@ -106,6 +107,18 @@ class DataTable(QWidget):
         header_layout.setContentsMargins(12, 8, 12, 8)
         header_layout.setSpacing(12)
 
+        # 全选复选框
+        self.select_all_checkbox = QCheckBox()
+        self.select_all_checkbox.setFixedWidth(24)
+        self.select_all_checkbox.setStyleSheet(f"""
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+            }}
+        """)
+        self.select_all_checkbox.stateChanged.connect(self._on_select_all_changed)
+        header_layout.addWidget(self.select_all_checkbox)
+
         # 列标题
         headers = ["学号", "姓名", "作业名称", "提交时间", "状态", "本地路径"]
         for header_text in headers:
@@ -129,6 +142,12 @@ class DataTable(QWidget):
         header_layout.addWidget(placeholder)
 
         self.main_layout.addWidget(header_frame)
+
+    def _on_select_all_changed(self, state):
+        """处理全选复选框状态改变"""
+        is_checked = (state == Qt.Checked or state == 2) # Qt.Checked is 2
+        for row in self.collapsible_rows:
+            row.set_checked(is_checked)
 
     def _on_row_double_clicked(self, data: dict):
         """
@@ -240,7 +259,7 @@ class DataTable(QWidget):
 
     def selectionModel(self):
         """返回选择模型（向后兼容占位符）"""
-        return MockSelectionModel()
+        return self._selection_model
 
     def setSelectionMode(self, mode):
         """设置选择模式（向后兼容占位符）"""
@@ -277,11 +296,24 @@ class DataTable(QWidget):
 
 class MockSelectionModel:
     """模拟选择模型（向后兼容）"""
-    def __init__(self):
-        self._selected_rows = []
+    def __init__(self, table):
+        self.table = table
 
     def selectedRows(self):
-        return self._selected_rows
+        """遍历所有行，返回被勾选行的索引"""
+        selected = []
+        for i, row in enumerate(self.table.collapsible_rows):
+            if row.is_checked():
+                selected.append(MockIndex(i))
+        return selected
 
     def select(self, index, flags):
         pass
+
+class MockIndex:
+    """模拟 QModelIndex"""
+    def __init__(self, row):
+        self._row = row
+    
+    def row(self):
+        return self._row
