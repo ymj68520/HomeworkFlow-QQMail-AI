@@ -989,6 +989,44 @@ class MainWindow(QMainWindow):
         thread = threading.Thread(target=run_batch_reanalyze, daemon=True)
         thread.start()
 
+    def on_refresh_clicked(self):
+        """处理刷新按钮点击事件 - 重置筛选条件并重新加载数据"""
+        try:
+            # 显示加载状态
+            self.statusBar().showMessage("正在刷新...")
+            QApplication.processEvents()
+
+            # 重置筛选条件到默认值
+            self.sidebar.student_filter.blockSignals(True)
+            self.sidebar.assignment_filter.blockSignals(True)
+            self.sidebar.status_filter.blockSignals(True)
+
+            self.sidebar.student_filter.setCurrentIndex(0)
+            self.sidebar.assignment_filter.setCurrentIndex(0)
+            self.sidebar.status_filter.setCurrentIndex(0)
+
+            self.sidebar.student_filter.blockSignals(False)
+            self.sidebar.assignment_filter.blockSignals(False)
+            self.sidebar.status_filter.blockSignals(False)
+
+            # 清空搜索框
+            self.sidebar.search_input.blockSignals(True)
+            self.sidebar.search_input.clear()
+            self.sidebar.search_input.blockSignals(False)
+
+            # 清除缓存并重新加载数据
+            hybrid_data_loader.invalidate_cache()
+            self.load_data(page=1, force_refresh=True)
+
+            # 显示完成状态
+            self.statusBar().showMessage("刷新完成")
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"刷新失败: {str(e)}")
+            self.statusBar().showMessage("刷新失败")
+
     def get_selected_submissions(self) -> List[dict]:
         """从表格选择中获取数据对象"""
         selected_rows = self.table.selectionModel().selectedRows()
