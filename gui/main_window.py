@@ -14,13 +14,19 @@ from gui.components.sidebar import Sidebar
 from gui.components.data_table import DataTable
 from gui.components.drawer import Drawer
 from gui.components.batch_popup import BatchPopup
+from gui.components.pagination import PaginationBar
 from database.operations import db
 from database.models import db_session
+from mail.smart_data_loader import smart_data_loader
+from mail.hybrid_data_loader import hybrid_data_loader
 from mail.target_folder_loader import target_folder_loader
 from mail.parser import mail_parser_inbox as mail_parser
 from mail.smtp_client import smtp_client
 from storage.manager import storage_manager
 from core.workflow import workflow
+from mail.connection_manager import connection_manager
+from core.retry_handler import retry_handler
+from gui.components.progress_dialog import ProgressDialog
 
 class MainWindow(QMainWindow):
     """主窗口 - PySide6 实现"""
@@ -60,6 +66,15 @@ class MainWindow(QMainWindow):
         # 绑定信号
         self.setup_connections()
 
+        # 启动连接管理器心跳检测
+        try:
+            connection_manager.start_heartbeat()
+            print("[INIT] ConnectionManager heartbeat started")
+        except Exception as e:
+            print(f"[INIT] Failed to start heartbeat: {e}")
+            import traceback
+            traceback.print_exc()
+
         # 启动后台监听
         self.start_background_monitoring()
 
@@ -82,13 +97,18 @@ class MainWindow(QMainWindow):
         self.table = DataTable()
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.set_headers(["学号", "姓名", "作业", "收件时间", "提交时间", "状态", "本地路径"], stretch_column=6)
-        
-        # 将表格放入垂直布局以支持工具栏或分页（如果需要）
+
+        # 分页导航栏
+        self.pagination = PaginationBar()
+
+        # 将表格和分页栏放入垂直布局
         center_container = QWidget()
         center_layout = QVBoxLayout(center_container)
         center_layout.setContentsMargins(20, 20, 20, 20)
+        center_layout.setSpacing(15)
         center_layout.addWidget(self.table)
-        
+        center_layout.addWidget(self.pagination)
+
         self.main_layout.addWidget(center_container)
 
         # 右侧隐藏层：抽屉
@@ -118,7 +138,10 @@ class MainWindow(QMainWindow):
         
         # 表格选择变更
         self.table.itemSelectionChanged.connect(self.update_status_info)
-        
+
+        # 分页导航
+        self.pagination.pageChanged.connect(self.on_page_changed)
+
         # 跨线程 UI 更新信号连接
         self.update_drawer_signal.connect(self.drawer.set_details)
         
@@ -127,16 +150,81 @@ class MainWindow(QMainWindow):
         self.sidebar.btn_reply.clicked.connect(self.on_batch_reply)
         self.sidebar.btn_delete.clicked.connect(self.on_batch_delete)
         self.sidebar.btn_export.clicked.connect(self.on_export_excel)
+
+        # New feature buttons
+        self.sidebar.btn_smart_retry.clicked.connect(self.on_smart_retry)
+        self.sidebar.btn_batch_reanalyze.clicked.connect(self.on_batch_reanalyze)
         
         # 表格右键菜单
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.on_context_menu)
 
-    def load_data(self, page: int = 1):
-        """加载数据"""
+    def load_data(self, page: int = 1, force_refresh: bool = False):
+        """
+        加载数据 - 性能优化版本
+
+        Args:
+            page: 页码
+            force_refresh: 强制刷新，忽略缓存
+        """
+        try:
+            print(f"[UI] load_data called: page={page}, force_refresh={force_refresh}")
+            self.statusBar().showMessage("正在加载数据...")
+
+            # 使用混合数据加载器（使用原始IMAP + 优化数据库）
+            print("[UI] Calling hybrid_data_loader.get_page_data...")
+            result = hybrid_data_loader.get_page_data(page, self.per_page, force_refresh)
+            print(f"[UI] Got result: {len(result.get('submissions', []))} submissions, total={result.get('total', 0)}")
+
+            self.all_submissions = result['submissions']
+            self.filtered_submissions = self.all_submissions.copy()
+            self.current_page = result['page']
+            self.total_pages = result['total_pages']
+            self.total_count = result['total']
+
+            print(f"[UI] all_submissions={len(self.all_submissions)}, filtered={len(self.filtered_submissions)}")
+
+            # 更新分页栏
+            self.pagination.update_pagination(
+                current_page=self.current_page,
+                total_pages=self.total_pages,
+                total_count=self.total_count
+            )
+
+            # 更新UI - 优化：只在必要时更新下拉菜单
+            self.update_dropdowns_if_needed()
+            # 使用批量渲染
+            print("[UI] Calling refresh_table_bulk...")
+            self.refresh_table_bulk()
+            print("[UI] refresh_table_bulk completed")
+            self.update_stats()
+
+            self.update_status_info()
+
+        except Exception as e:
+            import traceback
+            print(f"[UI] ERROR in load_data: {e}")
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"加载数据失败: {str(e)}\n\n详细错误:\n{traceback.format_exc()}")
+            self.statusBar().showMessage("加载失败")
+            # 使缓存失效
+            hybrid_data_loader.invalidate_cache()
+
+            # 尝试回退到旧版本
+            print("[UI] Attempting fallback to legacy loader...")
+            try:
+                self.load_data_legacy(page)
+            except Exception as e2:
+                print(f"[UI] Legacy loader also failed: {e2}")
+                traceback.print_exc()
+
+    def load_data_legacy(self, page: int = 1):
+        """
+        加载数据 - 旧版本（作为回退）
+        """
         try:
             self.statusBar().showMessage("正在加载数据...")
-            
+
             result = target_folder_loader.get_from_target_folder(page, self.per_page)
 
             self.all_submissions = result['submissions']
@@ -145,28 +233,42 @@ class MainWindow(QMainWindow):
             self.total_pages = result['total_pages']
             self.total_count = result['total']
 
+            # 更新分页栏
+            self.pagination.update_pagination(
+                current_page=self.current_page,
+                total_pages=self.total_pages,
+                total_count=self.total_count
+            )
+
             # 更新UI
             self.update_dropdowns()
             self.refresh_table()
             self.update_stats()
-            
+
             self.update_status_info()
 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"加载数据失败: {str(e)}")
             self.statusBar().showMessage("加载失败")
 
+    def on_page_changed(self, page: int):
+        """处理分页变更"""
+        self.load_data(page)
+
     def update_status_info(self):
         """统一更新状态栏信息，显示加载数和选中数"""
         loaded_count = len(self.filtered_submissions)
         total_count = getattr(self, 'total_count', 0)
         selected_count = len(self.table.selectionModel().selectedRows())
-        
+
         msg = f"已加载 {loaded_count} 条记录 (总计 {total_count})"
         if selected_count > 0:
             msg += f" | 已选择 {selected_count} 条记录"
-        
+
         self.statusBar().showMessage(msg)
+
+        # Enable/disable batch re-analyze button based on selection
+        self.sidebar.btn_batch_reanalyze.setEnabled(selected_count > 0)
 
     def update_dropdowns(self):
         """更新下拉菜单选项"""
@@ -215,6 +317,125 @@ class MainWindow(QMainWindow):
         self.sidebar.student_filter.blockSignals(False)
         self.sidebar.assignment_filter.blockSignals(False)
         self.sidebar.status_filter.blockSignals(False)
+
+    def update_dropdowns_if_needed(self):
+        """
+        智能更新下拉菜单 - 只在必要时更新
+
+        优化: 避免每次翻页都重建下拉菜单
+        """
+        # 检查是否需要更新（只在数据集变化时）
+        if not hasattr(self, '_last_data_hash'):
+            need_update = True
+        else:
+            # 简单哈希比较
+            current_hash = hash(tuple(
+                (s.get('student_id'), s.get('name'), s.get('assignment_name'))
+                for s in self.all_submissions[:10]  # 只比较前10条
+            ))
+            need_update = (current_hash != self._last_data_hash)
+
+        if need_update:
+            self.update_dropdowns()
+            # 更新哈希
+            self._last_data_hash = hash(tuple(
+                (s.get('student_id'), s.get('name'), s.get('assignment_name'))
+                for s in self.all_submissions[:10]
+            ))
+
+    def refresh_table_bulk(self):
+        """
+        批量刷新表格 - 性能优化版本
+
+        使用批量渲染，避免逐行添加导致的多次重绘
+        """
+        # 准备数据
+        table_data = []
+        for sub in self.filtered_submissions:
+            status_code = sub.get('status', 'pending')
+            status_text = self.STATUS_MAP.get(status_code, '未知')
+
+            if sub.get('is_late'):
+                status_text += " (逾期)"
+
+            # 格式化收件时间
+            received_time = sub.get('received_time')
+            if received_time:
+                if isinstance(received_time, datetime):
+                    received_str = received_time.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    received_str = str(received_time)
+            else:
+                received_str = "未知"
+
+            row_data = {
+                "学号": sub['student_id'],
+                "姓名": sub['name'],
+                "作业": sub['assignment_name'],
+                "收件时间": received_str,
+                "提交时间": sub['submission_time'].strftime('%Y-%m-%d %H:%M:%S'),
+                "状态": status_text,
+                "本地路径": sub['local_path'] or "未下载"
+            }
+            table_data.append(row_data)
+
+        # 批量设置数据
+        self.table.set_data_bulk(table_data)
+
+    def smart_refresh(self, changed_uids: list = None):
+        """
+        智能刷新 - 只更新变化的部分
+
+        Args:
+            changed_uids: 发生变化的记录UID列表，None表示完全刷新
+        """
+        if changed_uids is None:
+            # 完全刷新
+            self.load_data(self.current_page)
+        elif not changed_uids:
+            # 仅更新统计信息
+            self.update_stats()
+            self.update_status_info()
+        else:
+            # 增量更新指定的记录
+            self.update_records_incremental(changed_uids)
+
+    def update_records_incremental(self, uids: list):
+        """
+        增量更新指定记录
+
+        Args:
+            uids: 要更新的记录UID列表
+        """
+        # 找到需要更新的行
+        for uid in uids:
+            for row_idx in range(self.table.rowCount()):
+                # 通过学号和作业名匹配
+                student_id = self.table.item(row_idx, 0).text()
+                assignment_name = self.table.item(row_idx, 2).text()
+
+                # 在all_submissions中查找对应记录
+                for sub in self.all_submissions:
+                    if (str(sub['student_id']) == student_id and
+                        sub['assignment_name'] == assignment_name and
+                        sub.get('email_uid') == uid):
+
+                        # 更新表格行
+                        status_code = sub.get('status', 'pending')
+                        status_text = self.STATUS_MAP.get(status_code, '未知')
+                        if sub.get('is_late'):
+                            status_text += " (逾期)"
+
+                        self.table.update_rows_bulk({
+                            row_idx: {
+                                "状态": status_text,
+                                "本地路径": sub['local_path'] or "未下载"
+                            }
+                        })
+                        break
+
+        self.update_stats()
+        self.update_status_info()
 
     def refresh_table(self):
         """刷新表格数据"""
@@ -457,10 +678,7 @@ class MainWindow(QMainWindow):
             popup.exec()
 
     def handle_batch_update(self, submissions: List[Dict], field_id: str, new_value: Any):
-        """批量更新业务逻辑"""
-        success_count = 0
-        last_error = None
-        
+        """批量更新业务逻辑 - 性能优化版本"""
         # 状态转换
         if field_id == 'status':
             for code, text in self.STATUS_MAP.items():
@@ -469,24 +687,34 @@ class MainWindow(QMainWindow):
                     break
 
         try:
-            for sub in submissions:
-                try:
-                    if db.update_submission_field(
-                        sub.get('id'), 
-                        field_id, 
-                        new_value, 
+            submission_ids = [s.get('id') for s in submissions if s.get('id')]
+
+            if not submission_ids:
+                QMessageBox.warning(self, "失败", "没有有效的记录ID")
+                return
+
+            # 使用批量更新
+            if field_id == 'status':
+                success_count = db.update_submissions_status_bulk(submission_ids, new_value)
+            else:
+                # 其他字段逐个更新（因为可能涉及关联表）
+                success_count = 0
+                for sub_id in submission_ids:
+                    sub = next((s for s in submissions if s.get('id') == sub_id), None)
+                    if sub and db.update_submission_field(
+                        sub_id, field_id, new_value,
                         email_uid=sub.get('email_uid'),
                         message_id=sub.get('message_id')
                     ):
                         success_count += 1
-                except Exception as e:
-                    last_error = str(e)
-            
+
             if success_count > 0:
+                # 使用增量更新
+                changed_uids = [s.get('email_uid') for s in submissions if s.get('id') in submission_ids[:success_count]]
+                self.smart_refresh(changed_uids)
                 QMessageBox.information(self, "成功", f"已更新 {success_count}/{len(submissions)} 条记录")
-                self.load_data(self.current_page)
             else:
-                QMessageBox.warning(self, "失败", f"更新失败: {last_error or '未知错误'}")
+                QMessageBox.warning(self, "失败", "更新失败: 未知错误")
         finally:
             db_session.remove()
 
@@ -540,7 +768,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("准备就绪")
 
     def on_batch_reply(self):
-        """批量回复邮件"""
+        """批量回复邮件 - 性能优化版本"""
         submissions = self.get_selected_submissions()
         unreplied = [s for s in submissions if s.get('status') == 'unreplied']
         if not unreplied:
@@ -551,36 +779,206 @@ class MainWindow(QMainWindow):
             return
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
-        success_count = 0
+        success_ids = []
+        failed_count = 0
+
+        # 批量发送邮件
         for s in unreplied:
+            self.statusBar().showMessage(f"正在回复 ({len(success_ids)+1}/{len(unreplied)}): {s['name']}")
+            QApplication.processEvents()
+
             if smtp_client.send_reply(s['email'], s['name'], s['assignment_name']):
-                db.mark_replied(s['id'])
-                db.update_submission_status(s['id'], 'completed')
-                success_count += 1
-        
-        self.load_data(self.current_page)
-        QMessageBox.information(self, "完成", f"回复完成！成功: {success_count}/{len(unreplied)}")
+                success_ids.append(s['id'])
+            else:
+                failed_count += 1
+
+        # 批量更新数据库
+        if success_ids:
+            db.update_submissions_status_bulk(success_ids, 'completed')
+            # 使用增量更新而不是完全重新加载
+            changed_uids = [s.get('email_uid') for s in unreplied if s['id'] in success_ids]
+            self.smart_refresh(changed_uids)
+
+        QMessageBox.information(self, "完成", f"回复完成！成功: {len(success_ids)}/{len(unreplied)}")
         QApplication.restoreOverrideCursor()
+        self.statusBar().showMessage("准备就绪")
 
     def on_batch_delete(self):
-        """批量删除记录"""
+        """批量删除记录 - 性能优化版本"""
         submissions = self.get_selected_submissions()
         if not submissions: return
-        
+
         if QMessageBox.question(self, "确认", f"确定删除这 {len(submissions)} 条记录吗？\n邮件将移回收件箱。") != QMessageBox.Yes:
             return
 
-        success_count = 0
-        for s in submissions:
-            if workflow.delete_submission(s['id']):
-                success_count += 1
-        
-        self.load_data(self.current_page)
+        # 收集ID
+        submission_ids = [s['id'] for s in submissions]
+        uids = [s.get('email_uid') for s in submissions]
+
+        # 批量删除数据库记录
+        success_count = db.delete_submissions_bulk(submission_ids)
+
+        # 从缓存中移除
+        for uid in uids:
+            hybrid_data_loader.remove_record(uid)
+
+        # 使用增量更新
+        self.smart_refresh([])  # 仅更新统计
+        self.refresh_table_bulk()  # 重新渲染当前页（因为记录减少）
+
         QMessageBox.information(self, "完成", f"删除完成！成功: {success_count}/{len(submissions)}")
 
     def on_export_excel(self):
         """导出 Excel 占位符"""
         QMessageBox.information(self, "提示", "导出 Excel 功能待实现")
+
+    def on_smart_retry(self):
+        """智能重试：重新处理当前页面的所有异常条目"""
+        # Find abnormal entries on current page
+        abnormal_entries = [
+            s for s in self.filtered_submissions
+            if s.get('status') in retry_handler.ABNORMAL_STATUSES
+        ]
+
+        if not abnormal_entries:
+            QMessageBox.information(
+                self,
+                "提示",
+                "当前页面没有需要重试的异常条目。\n\n"
+                f"异常状态包括: {', '.join(['识别异常', '下载失败', '未处理'])}"
+            )
+            return
+
+        # Confirm with user
+        reply = QMessageBox.question(
+            self,
+            "确认智能重试",
+            f"找到 {len(abnormal_entries)} 条异常记录。\n\n"
+            "将对这些记录重新运行完整的分析流程（从IMAP重新拉取、AI识别、存储等）。\n\n"
+            "是否继续？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        # Show progress dialog
+        progress = ProgressDialog(self, title="智能重试中...", cancelable=False)
+        progress.set_indeterminate()
+        progress.show()
+
+        # Run in background thread
+        def run_smart_retry():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                result = loop.run_until_complete(
+                    retry_handler.smart_retry_page(
+                        self.filtered_submissions,
+                        progress_callback=lambda curr, total, msg: (
+                            QTimer.singleShot(0, lambda: (
+                                progress.set_progress(curr, total),
+                                progress.set_detail(msg)
+                            ))
+                        )
+                    )
+                )
+                # Update UI on main thread
+                QTimer.singleShot(0, lambda: show_retry_result(result))
+            finally:
+                loop.close()
+
+        def show_retry_result(result):
+            progress.set_complete(success=result['failed'] == 0)
+            summary = (
+                f"智能重试完成！\n\n"
+                f"总计: {result['total']} 条\n"
+                f"成功: {result['success']} 条\n"
+                f"失败: {result['failed']} 条\n"
+                f"跳过: {result['skipped']} 条"
+            )
+
+            if result.get('error'):
+                summary += f"\n\n错误: {result['error']}"
+
+            QMessageBox.information(self, "智能重试结果", summary)
+
+            # Refresh current page to show updated statuses
+            self.load_data(self.current_page, force_refresh=True)
+
+        # Start background thread
+        thread = threading.Thread(target=run_smart_retry, daemon=True)
+        thread.start()
+
+    def on_batch_reanalyze(self):
+        """批量AI重析：重新分析选中的条目"""
+        submissions = self.get_selected_submissions()
+        if not submissions:
+            QMessageBox.information(self, "提示", "请先选择要重新分析的记录")
+            return
+
+        # Confirm with user
+        reply = QMessageBox.question(
+            self,
+            "确认批量AI重析",
+            f"已选择 {len(submissions)} 条记录。\n\n"
+            "将从IMAP服务器重新拉取邮件内容并使用AI重新分析。\n"
+            "这将更新数据库中的学号、姓名、作业名称等信息。\n\n"
+            "是否继续？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        # Show progress dialog
+        progress = ProgressDialog(self, title="批量AI重析中...", cancelable=False)
+        progress.set_indeterminate()
+        progress.show()
+
+        # Run in background thread
+        def run_batch_reanalyze():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                result = loop.run_until_complete(
+                    retry_handler.batch_reanalyze(
+                        submissions,
+                        progress_callback=lambda curr, total, msg: (
+                            QTimer.singleShot(0, lambda: (
+                                progress.set_progress(curr, total),
+                                progress.set_detail(msg)
+                            ))
+                        )
+                    )
+                )
+                # Update UI on main thread
+                QTimer.singleShot(0, lambda: show_reanalyze_result(result))
+            finally:
+                loop.close()
+
+        def show_reanalyze_result(result):
+            progress.set_complete(success=result['failed'] == 0)
+            summary = (
+                f"批量AI重析完成！\n\n"
+                f"总计: {result['total']} 条\n"
+                f"成功: {result['success']} 条\n"
+                f"失败: {result['failed']} 条"
+            )
+
+            if result.get('error'):
+                summary += f"\n\n错误: {result['error']}"
+
+            QMessageBox.information(self, "批量AI重析结果", summary)
+
+            # Refresh current page to show updated data
+            self.load_data(self.current_page, force_refresh=True)
+
+        # Start background thread
+        thread = threading.Thread(target=run_batch_reanalyze, daemon=True)
+        thread.start()
 
     def get_selected_submissions(self) -> List[dict]:
         """从表格选择中获取数据对象"""
