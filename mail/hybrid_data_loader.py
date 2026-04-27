@@ -9,6 +9,7 @@ from mail.parser import MailParser
 from config.settings import settings
 from database.operations import db
 from core.data_cache import data_cache
+from core.data_transform import DataTransformService
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict
@@ -27,6 +28,7 @@ class HybridDataLoader:
     def __init__(self):
         self.imap = imap_client_target
         self.parser = MailParser(self.imap)
+        self.data_transform = DataTransformService()
         self._cached_emails = None
         self._total_count = 0
 
@@ -94,18 +96,22 @@ class HybridDataLoader:
 
             # 使用批量处理提升性能
             print("[HybridLoader] Processing emails...")
-            submissions = self._batch_merge_submission_info(page_emails)
-            print(f"[HybridLoader] Got {len(submissions)} submissions")
+            raw_submissions = self._batch_merge_submission_info(page_emails)
+            print(f"[HybridLoader] Got {len(raw_submissions)} raw submissions")
+
+            # 新增：转换为分组格式
+            grouped_submissions = self.data_transform.transform_to_grouped_format(raw_submissions)
+            print(f"[HybridLoader] Got {len(grouped_submissions)} grouped submissions")
 
             self.imap.disconnect()
 
             total_pages = (self._total_count + per_page - 1) // per_page
 
             # 更新缓存
-            data_cache.set_page_data(page, submissions, self._total_count, total_pages)
+            data_cache.set_page_data(page, grouped_submissions, self._total_count, total_pages)
 
             return {
-                'submissions': submissions,
+                'submissions': grouped_submissions,
                 'total': self._total_count,
                 'page': page,
                 'per_page': per_page,
@@ -171,6 +177,9 @@ class HybridDataLoader:
             'email_subject': email_data.get('subject', ''),
             'email_from': email_data.get('from', ''),
             'received_time': self._parse_date(email_data.get('date')),
+            'parent_id': None,  # 新增：父记录ID，用于分组显示
+            'relation_type': None,  # 新增：关联类型（primary/related）
+            'is_primary': True,  # 新增：是否为主记录
         }
 
         # 2. 从数据库获取元数据
