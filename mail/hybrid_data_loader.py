@@ -163,6 +163,37 @@ class HybridDataLoader:
             submission = self._merge_single_record(email_data, db_record)
             submissions.append(submission)
 
+        # 新增：查询并添加子记录（重复提交）
+        # 获取所有主记录的ID
+        primary_ids = [s.get('id') for s in submissions if s.get('id')]
+        if primary_ids:
+            # 查询所有这些主记录的子记录
+            from database.models import Submission
+            child_records = db.session.query(Submission).filter(
+                Submission.parent_id.in_(primary_ids)
+            ).all()
+
+            # 将子记录转换为字典格式并添加
+            for child in child_records:
+                child_dict = {
+                    'id': child.id,
+                    'student_id': child.student.student_id if child.student else "Unknown",
+                    'name': child.student.name if child.student else "Unknown",
+                    'assignment_name': child.assignment.name if child.assignment else "Unknown",
+                    'submission_time': child.submission_time,
+                    'is_late': child.is_late,
+                    'is_downloaded': child.is_downloaded,
+                    'is_replied': child.is_replied,
+                    'local_path': child.local_path,
+                    'status': getattr(child, 'status', 'pending'),
+                    'parent_id': child.parent_id,
+                    'relation_type': child.relation_type.value if child.relation_type else None,
+                    'is_primary': child.is_primary,
+                    'version': child.version,
+                    'is_latest': child.is_latest,
+                }
+                submissions.append(child_dict)
+
         return submissions
 
     def _merge_single_record(self, email_data: Dict, db_record) -> Dict:
