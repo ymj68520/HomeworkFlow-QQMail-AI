@@ -1,266 +1,126 @@
-from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
-from PySide6.QtCore import Qt, Signal
-from gui.components.common import Badge
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame
+from PySide6.QtCore import Signal
+
+from gui.components.collapsible_row import CollapsibleRow
 from gui.styles import palette
 
-class DataTable(QTableWidget):
+class DataTable(QWidget):
     """
     现代化数据表格组件
-    支持自定义 Badge 渲染、Hover 效果和双击行信号
+    使用 CollapsibleRow 支持折叠/展开功能
     """
     rowDoubleClicked = Signal(dict)
+    childClicked = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.collapsible_rows = []
         self._init_ui()
         self._apply_style()
 
     def _init_ui(self):
-        # 基础配置
-        self.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.setShowGrid(False)
-        self.setAlternatingRowColors(False)
-        self.verticalHeader().setVisible(False)
-        self.setFocusPolicy(Qt.NoFocus)
-        self.setMouseTracking(True)  # 开启鼠标追踪以支持更灵敏的 Hover
-
-        # 表头配置
-        header = self.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.Interactive)
-        header.setStretchLastSection(True)
-        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        header.setHighlightSections(False)
-
-        # 信号连接
-        self.cellDoubleClicked.connect(self._on_cell_double_clicked)
+        # 主垂直布局
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
 
     def _apply_style(self):
-        # QSS 样式定义 - 方案 A 深色模式
+        # QSS 样式定义
         self.setStyleSheet(f"""
-            QTableWidget {{
+            QWidget {{
                 background-color: {palette.SURFACE};
                 color: {palette.TEXT_PRIMARY};
-                border: 1px solid {palette.BORDER};
-                border-radius: 8px;
-                gridline-color: transparent;
-                outline: none;
-            }}
-            QTableWidget::item {{
-                padding: 12px 8px;
-                border-bottom: 1px solid {palette.BORDER};
-                color: {palette.TEXT_PRIMARY};
-            }}
-            QTableWidget::item:selected {{
-                background-color: {palette.PRIMARY}33; /* 20% 透明度的主色 */
-                color: {palette.PRIMARY};
-                border-bottom: 1px solid {palette.BORDER};
-            }}
-            QTableWidget::item:hover {{
-                background-color: {palette.BORDER}44;
-            }}
-            QHeaderView::section {{
-                background-color: {palette.SURFACE};
-                color: {palette.TEXT_SECONDARY};
-                padding: 12px 8px;
-                border: none;
-                border-bottom: 2px solid {palette.BORDER};
-                font-weight: bold;
-                font-size: 11px;
-                text-transform: uppercase;
             }}
         """)
 
-    def _on_cell_double_clicked(self, row, column):
-        """处理行双击，组装字典并发送信号"""
-        row_data = {}
-        for col in range(self.columnCount()):
-            header_item = self.horizontalHeaderItem(col)
-            if header_item:
-                key = header_item.text()
-                # 优先获取 Item 文本
-                item = self.item(row, col)
-                if item:
-                    row_data[key] = item.data(Qt.UserRole) or item.text()
-                
-                # 如果有 Widget (如 Badge)，尝试从 Widget 获取
-                widget = self.cellWidget(row, col)
-                if isinstance(widget, Badge):
-                    row_data[key] = widget.text()
-        
-        self.rowDoubleClicked.emit(row_data)
-
-    def set_headers(self, headers: list, stretch_column: int = None):
+    def set_data(self, data_list: list):
         """
-        设置表头
-        stretch_column: 指定伸展的列索引，若为 None 则尝试自动匹配
-        """
-        self.setColumnCount(len(headers))
-        self.setHorizontalHeaderLabels(headers)
-        
-        header = self.horizontalHeader()
-        
-        # 如果未指定，尝试自动匹配“主题”或“内容”作为伸展列
-        if stretch_column is None:
-            for i, h in enumerate(headers):
-                if h in ["主题", "内容", "Subject", "Body"]:
-                    stretch_column = i
-                    break
-        
-        # 应用伸展模式
-        if stretch_column is not None and stretch_column < len(headers):
-            header.setSectionResizeMode(stretch_column, QHeaderView.Stretch)
-            # 其他列保持 Interactive
-            for i in range(len(headers)):
-                if i != stretch_column:
-                    header.setSectionResizeMode(i, QHeaderView.Interactive)
-        else:
-            # 默认回退：所有列交互，最后一列伸展
-            header.setSectionResizeMode(QHeaderView.Interactive)
-            header.setStretchLastSection(True)
-
-    def add_row(self, data: dict):
-        """
-        添加一行数据
-        data 字典的键应与表头文字对应
-        """
-        row = self.rowCount()
-        self.insertRow(row)
-        
-        for col in range(self.columnCount()):
-            header_text = self.horizontalHeaderItem(col).text()
-            val = data.get(header_text, "")
-            
-            if header_text == "状态":
-                # 特殊处理状态列，渲染 Badge
-                color_type = "primary"
-                val_str = str(val)
-                if "成功" in val_str or "完成" in val_str:
-                    color_type = "success"
-                elif "失败" in val_str or "错误" in val_str:
-                    color_type = "error"
-                
-                badge = Badge(val_str, color_type=color_type)
-                container = self._wrap_widget(badge)
-                self.setCellWidget(row, col, container)
-                
-                # 关键修复：setText("") 确保单元格背景没有文字显示，数据存入 UserRole
-                item = QTableWidgetItem("") 
-                item.setData(Qt.UserRole, val)
-                self.setItem(row, col, item)
-            else:
-                item = QTableWidgetItem(str(val))
-                item.setData(Qt.UserRole, val)
-                self.setItem(row, col, item)
-        
-        self.setRowHeight(row, 52)
-
-    def set_data_bulk(self, data_list: list):
-        """
-        批量设置数据 - 性能优化版本
-
-        一次性设置所有行，避免逐行添加导致的多次重绘
+        设置数据 - 使用 CollapsibleRow 展示
 
         Args:
-            data_list: 数据字典列表，每个字典的键应与表头文字对应
+            data_list: 数据字典列表，每个字典代表一条提交记录
         """
-        # 临时禁用更新
-        self.setUpdatesEnabled(False)
+        # 清除现有的可折叠行
+        for row in self.collapsible_rows:
+            row.deleteLater()
+        self.collapsible_rows.clear()
 
-        try:
-            # 设置总行数
-            self.setRowCount(len(data_list))
+        # 清空布局
+        while self.main_layout.count():
+            item = self.main_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
 
-            # 批量创建所有行的数据
-            for row, data in enumerate(data_list):
-                for col in range(self.columnCount()):
-                    header_text = self.horizontalHeaderItem(col).text()
-                    val = data.get(header_text, "")
+        # 添加表头
+        self._add_header()
 
-                    if header_text == "状态":
-                        # 特殊处理状态列，渲染 Badge
-                        color_type = "primary"
-                        val_str = str(val)
-                        if "完成" in val_str:
-                            color_type = "success"
-                        elif "失败" in val_str or "错误" in val_str:
-                            color_type = "error"
-                        elif "未处理" in val_str or "pending" in val_str.lower():
-                            color_type = "warning"
+        # 创建并添加 CollapsibleRow
+        for data in data_list:
+            collapsible_row = CollapsibleRow(data, self)
+            collapsible_row.rowDoubleClicked.connect(self._on_row_double_clicked)
+            collapsible_row.childClicked.connect(self._on_child_clicked)
+            self.main_layout.addWidget(collapsible_row)
+            self.collapsible_rows.append(collapsible_row)
 
-                        badge = Badge(val_str, color_type=color_type)
-                        container = self._wrap_widget(badge)
-                        self.setCellWidget(row, col, container)
+        # 添加弹性空间
+        self.main_layout.addStretch()
 
-                        # 设置数据到UserRole
-                        item = QTableWidgetItem("")
-                        item.setData(Qt.UserRole, val)
-                        self.setItem(row, col, item)
-                    else:
-                        item = QTableWidgetItem(str(val))
-                        item.setData(Qt.UserRole, val)
-                        self.setItem(row, col, item)
+    def _add_header(self):
+        “””添加表格头部”””
+        from PySide6.QtWidgets import QHBoxLayout
 
-                self.setRowHeight(row, 52)
+        header_frame = QFrame()
+        header_frame.setStyleSheet(f”””
+            QFrame {{
+                background-color: {palette.SURFACE};
+                border: none;
+                border-bottom: 2px solid {palette.BORDER};
+                padding: 12px 8px;
+            }}
+        “””)
 
-        finally:
-            # 重新启用更新并触发一次重绘
-            self.setUpdatesEnabled(True)
+        header_layout = QHBoxLayout(header_frame)
+        header_layout.setContentsMargins(12, 8, 12, 8)
+        header_layout.setSpacing(12)
 
-    def update_rows_bulk(self, updates: dict):
-        """
-        批量更新指定行 - 增量更新
+        # 列标题
+        headers = [“学号”, “姓名”, “作业名称”, “提交时间”, “状态”, “本地路径”]
+        for header_text in headers:
+            label = QLabel(header_text)
+            label.setStyleSheet(f”””
+                QLabel {{
+                    color: {palette.TEXT_SECONDARY};
+                    font-weight: bold;
+                    font-size: 11px;
+                    text-transform: uppercase;
+                }}
+            “””)
+            header_layout.addWidget(label)
+
+        # 弹性空间
+        header_layout.addStretch()
+
+        # 折叠按钮占位
+        placeholder = QLabel()
+        placeholder.setFixedWidth(32)
+        header_layout.addWidget(placeholder)
+
+        self.main_layout.addWidget(header_frame)
+
+    def _on_row_double_clicked(self, data: dict):
+        “””
+        处理主记录双击事件
 
         Args:
-            updates: {row_index: {column_header: new_value}}
-        """
-        self.setUpdatesEnabled(False)
+            data: 主记录数据
+        “””
+        self.rowDoubleClicked.emit(data)
 
-        try:
-            for row, row_data in updates.items():
-                if row >= self.rowCount():
-                    continue
+    def _on_child_clicked(self, data: dict):
+        “””
+        处理子记录点击事件
 
-                for col in range(self.columnCount()):
-                    header_text = self.horizontalHeaderItem(col).text()
-                    if header_text in row_data:
-                        val = row_data[header_text]
-
-                        if header_text == "状态":
-                            # 更新状态列的Badge
-                            color_type = "primary"
-                            val_str = str(val)
-                            if "完成" in val_str:
-                                color_type = "success"
-                            elif "失败" in val_str or "错误" in val_str:
-                                color_type = "error"
-
-                            badge = Badge(val_str, color_type=color_type)
-                            container = self._wrap_widget(badge)
-                            self.setCellWidget(row, col, container)
-
-                            item = self.item(row, col)
-                            if item:
-                                item.setData(Qt.UserRole, val)
-                        else:
-                            item = self.item(row, col)
-                            if item:
-                                item.setText(str(val))
-                                item.setData(Qt.UserRole, val)
-        finally:
-            self.setUpdatesEnabled(True)
-
-    def _wrap_widget(self, widget):
-        """辅助方法：将组件居中包裹在容器中"""
-        from PySide6.QtWidgets import QWidget, QHBoxLayout
-        container = QWidget()
-        layout = QHBoxLayout(container)
-        layout.addWidget(widget)
-        layout.setAlignment(Qt.AlignCenter)
-        layout.setContentsMargins(0, 0, 0, 0)
-        return container
-
-    def clear_data(self):
-        """清空所有行"""
-        self.setRowCount(0)
+        Args:
+            data: 子记录数据
+        “””
+        self.childClicked.emit(data)
