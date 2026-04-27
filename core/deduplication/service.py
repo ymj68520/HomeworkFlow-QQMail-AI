@@ -7,6 +7,8 @@ from core.deduplication.email_deduplicator import EmailDeduplicator
 from core.deduplication.submission_deduplicator import SubmissionDeduplicator
 from core.deduplication.version_manager import VersionManager
 from core.deduplication.cache_manager import CacheManager
+from core.deduplication.fuzzy_matcher import FuzzyMatcher
+from core.deduplication.submission_group_manager import SubmissionGroupManager
 
 
 class DeduplicationService:
@@ -24,6 +26,9 @@ class DeduplicationService:
         self.submission_deduplicator = SubmissionDeduplicator(db)
         self.version_manager = VersionManager(db)
         self.cache_manager = CacheManager(db)
+        # 新增服务
+        self.fuzzy_matcher = FuzzyMatcher(db)
+        self.group_manager = SubmissionGroupManager(db)
 
     async def check_email(self, email_uid: str) -> DeduplicationResult:
         """检查邮件是否重复
@@ -116,3 +121,113 @@ class DeduplicationService:
         submission_result.cached_data = cached_data
 
         return submission_result
+
+    async def check_submission_with_fuzzy(
+        self,
+        student_id: str,
+        name: str,
+        assignment_name: str
+    ) -> DeduplicationResult:
+        """使用容错机制检查提交是否重复
+
+        三级检查机制：
+        - Level 1: 精确匹配（学号+作业名）
+        - Level 2: 模糊匹配（学号相似或姓名相似）
+        - Level 3: 无匹配，视为新提交
+
+        Args:
+            student_id: 学号
+            name: 学生姓名
+            assignment_name: 作业名称
+
+        Returns:
+            DeduplicationResult with appropriate action
+        """
+        # Level 1: 尝试精确匹配
+        primary = await self.group_manager.get_or_create_primary(
+            student_id, name, assignment_name
+        )
+
+        if primary:
+            # 精确匹配成功 - 可能是版本更新
+            next_version = await self.version_manager.get_next_version(
+                student_id, assignment_name
+            )
+
+            return DeduplicationResult(
+                is_duplicate=True,
+                duplicate_type='submission',
+                action='update_version',
+                submission=primary,
+                version=next_version,
+                message=f"Exact match: {student_id} - {assignment_name}, "
+                       f"current version: {primary.version}, next version: {next_version}"
+            )
+
+        # Level 2: 模糊匹配
+        possible_duplicates = await self.fuzzy_matcher.find_possible_duplicates(
+            student_id, name, assignment_name
+        )
+
+        if possible_duplicates:
+            # 找到可能的重复 - 返回第一个作为建议
+            duplicate = possible_duplicates[0]
+
+            return DeduplicationResult(
+                is_duplicate=True,
+                duplicate_type='fuzzy_match',
+                action='review',
+                submission=duplicate['submission'],
+                message=f"Possible duplicate found: {duplicate['similarity']:.2f} similar to "
+                       f"{duplicate.get('relation_type', 'unknown')}. "
+                       f"Existing: {duplicate['submission'].student_id} - {duplicate['submission'].assignment_name}. "
+                       f"New: {student_id} - {name} - {assignment_name}"
+            )
+
+        # Level 3: 无匹配 - 新提交
+        return DeduplicationResult(
+            is_duplicate=False,
+            action='new',
+            message="No duplicate found - new submission"
+        )
+
+    async def handle_duplicate_submission(
+        self,
+        new_submission,
+        existing_primary,
+        relation_type: str
+    ) -> bool:
+        """处理重复提交
+
+        根据关系类型决定如何处理：
+        - 'version': 更新主记录版本
+        - 其他: 创建关系记录
+
+        Args:
+            new_submission: 新的提交记录
+            existing_primary: 已存在的主记录
+            relation_type: 关系类型 ('version', 'typo', etc.)
+
+        Returns:
+            bool: 处理是否成功
+        """
+        try:
+            if relation_type == 'version':
+                # 版本更新：更新主记录
+                success = await self.group_manager.update_primary_record(
+                    existing_primary.id,
+                    new_submission.id
+                )
+            else:
+                # 其他关系：创建关系记录
+                success = await self.group_manager.create_relation(
+                    primary_id=existing_primary.id,
+                    related_id=new_submission.id,
+                    relation_type=relation_type
+                )
+
+            return success
+
+        except Exception as e:
+            print(f"Error handling duplicate submission: {e}")
+            return False

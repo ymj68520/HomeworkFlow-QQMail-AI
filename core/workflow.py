@@ -75,20 +75,6 @@ class AssignmentWorkflow:
             if not email_data['has_attachments']:
                 print("No attachments found, marking as read")
                 self.parser.mark_as_read(email_uid)
-                # 记录为忽略
-                import json
-                body_json = json.dumps(email_data.get('email_body'), ensure_ascii=False) if email_data.get('email_body') else None
-                self.db.create_submission(
-                    email_uid=email_uid,
-                    message_id=email_data.get('message_id'),
-                    email_subject=email_data['subject'],
-                    sender_email=email_data['sender_email'],
-                    sender_name=email_data['sender_name'],
-                    submission_time=datetime.now(),
-                    status=SubmissionStatus.IGNORED.value,
-                    error_message='No attachments',
-                    body=body_json
-                )
                 self.db.log_email_action(
                     email_uid=email_uid,
                     action='marked_read',
@@ -133,20 +119,6 @@ class AssignmentWorkflow:
             if not student_info.get('is_assignment'):
                 print("Not an assignment submission, marking as read")
                 self.parser.mark_as_read(email_uid)
-                # 记录为忽略
-                import json
-                body_json = json.dumps(email_data.get('email_body'), ensure_ascii=False) if email_data.get('email_body') else None
-                self.db.create_submission(
-                    email_uid=email_uid,
-                    message_id=email_data.get('message_id'),
-                    email_subject=email_data['subject'],
-                    sender_email=email_data['sender_email'],
-                    sender_name=email_data['sender_name'],
-                    submission_time=datetime.now(),
-                    status=SubmissionStatus.IGNORED.value,
-                    error_message='Not an assignment',
-                    body=body_json
-                )
                 self.db.log_email_action(
                     email_uid=email_uid,
                     action='marked_read',
@@ -163,16 +135,6 @@ class AssignmentWorkflow:
             if not all([student_id, student_name, assignment_name]):
                 print("Missing required information, marking as read")
                 self.parser.mark_as_read(email_uid)
-                # 记录为 AI 提取异常
-                self.db.create_submission(
-                    email_uid=email_uid,
-                    email_subject=email_data['subject'],
-                    sender_email=email_data['sender_email'],
-                    sender_name=email_data['sender_name'],
-                    submission_time=datetime.now(),
-                    status=SubmissionStatus.AI_ERROR.value,
-                    error_message=f'Missing info: student_id={student_id}, name={student_name}, assignment={assignment_name}'
-                )
                 self.db.log_email_action(
                     email_uid=email_uid,
                     action='marked_read',
@@ -230,24 +192,30 @@ class AssignmentWorkflow:
         student_name = student_info.get('name')
         assignment_name = student_info.get('assignment_name')
 
-        # 1. 使用新服务进行去重检查
-        dedup_result = await self.dedup_service.check_all(
-            email_uid=email_uid,
+        # 1. 首先检查邮件是否重复
+        email_result = await self.dedup_service.check_email(email_uid)
+        if email_result.is_duplicate and not is_retry:
+            print(f"Email already processed: {email_uid}")
+            return {'success': True, 'action': 'skip', 'reason': 'email_duplicate'}
+
+        # 2. 使用新服务进行提交去重检查（含模糊匹配）
+        dedup_result = await self.dedup_service.check_submission_with_fuzzy(
             student_id=student_id,
+            name=student_name,
             assignment_name=assignment_name
         )
 
         if dedup_result.is_duplicate:
-            if dedup_result.duplicate_type == 'email':
-                print(f"Email already processed: {email_uid}")
-                return {'success': True, 'action': 'skip', 'reason': 'email_duplicate'}
-
-            elif dedup_result.duplicate_type == 'submission':
+            if dedup_result.duplicate_type == 'submission':
                 print(f"Duplicate submission: {student_id} - {assignment_name}")
                 # 使用事务性文件操作创建新版本
                 return await self._handle_duplicate_version(
                     email_uid, email_data, student_info, dedup_result.version
                 )
+            elif dedup_result.duplicate_type == 'fuzzy_match':
+                print(f"Possible duplicate detected: {dedup_result.message}")
+                # 对于模糊匹配，暂时当作新提交处理（可以后续添加人工审核逻辑）
+                print("Proceeding as new submission (fuzzy match)")
 
         # 2. 保存附件到本地
         print("Storing attachments locally...")
@@ -269,6 +237,7 @@ class AssignmentWorkflow:
             student_id=student_id,
             assignment_name=assignment_name,
             email_uid=email_uid,
+            message_id=email_data.get('message_id'),
             email_subject=email_data['subject'],
             sender_email=email_data['sender_email'],
             sender_name=student_name,
@@ -355,16 +324,23 @@ class AssignmentWorkflow:
 
         try:
             # 1. 创建新的提交记录
+            status = SubmissionStatus.UNREPLIED.value
+            import json
+            body_json = json.dumps(email_data.get('email_body'), ensure_ascii=False) if email_data.get('email_body') else None
+            
             submission = await self.async_db.create_submission(
                 student_id=student_id,
                 assignment_name=assignment_name,
                 email_uid=email_uid,
+                message_id=email_data.get('message_id'),
                 email_subject=email_data['subject'],
                 sender_email=email_data['sender_email'],
                 sender_name=student_name,
                 submission_time=datetime.now(),
                 version=new_version,
-                is_latest=True
+                is_latest=True,
+                status=status,
+                body=body_json
             )
 
             if not submission:
@@ -379,6 +355,9 @@ class AssignmentWorkflow:
                     name=student_name,
                     attachments=email_data['attachments']
                 )
+                
+                # 更新本地路径到数据库
+                self.db.update_submission_local_path(submission.id, local_path)
 
                 # 3. 标记旧版本
                 await self.dedup_service.version_manager.mark_old_versions(
