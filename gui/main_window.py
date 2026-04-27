@@ -5,8 +5,8 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, 
-    QApplication, QMessageBox, QHeaderView, QAbstractItemView
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
+    QApplication, QMessageBox, QHeaderView, QAbstractItemView, QPushButton
 )
 from PySide6.QtCore import Qt, QTimer, Signal
 
@@ -117,6 +117,12 @@ class MainWindow(QMainWindow):
 
         # 状态栏
         self.statusBar().showMessage("准备就绪")
+
+        # 刷新按钮
+        self.refresh_btn = QPushButton("刷新")
+        self.refresh_btn.setFixedSize(80, 24)
+        self.refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.statusBar().addPermanentWidget(self.refresh_btn)
 
     def setup_connections(self):
         """绑定信号与槽"""
