@@ -389,6 +389,31 @@ class IMAPClient:
             print(f"Error checking folder existence: {e}")
             return False
 
+    def uid_exists(self, email_uid: str) -> bool:
+        """检查指定UID的邮件是否存在（不获取邮件内容）"""
+        try:
+            # 确保已经选择了文件夹
+            if not self.current_folder:
+                return False
+
+            # 使用 UID FETCH 只获取 RFC822.SIZE 来检查邮件是否存在
+            # 这样比获取完整邮件更高效
+            status, msg_data = self.connection.uid('fetch', email_uid, '(RFC822.SIZE)')
+
+            if status != 'OK':
+                return False
+
+            # 如果 msg_data 为 [None]，表示 UID 不存在
+            if not msg_data or msg_data == [None]:
+                return False
+
+            return True
+
+        except Exception as e:
+            # 任何异常都认为邮件不存在
+            print(f"[IMAPClient] Error checking UID {email_uid}: {e}")
+            return False
+
     def decode_header(self, header_value: Optional[str]) -> str:
         """解码邮件头"""
         if not header_value:
