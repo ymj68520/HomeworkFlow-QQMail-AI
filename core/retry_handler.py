@@ -1,6 +1,5 @@
 import asyncio
-from typing import List, Dict, Optional
-from datetime import datetime
+from typing import List, Dict, Optional, Callable
 from mail.parser import mail_parser_target
 from ai.extractor import ai_extractor
 from database.operations import db
@@ -23,7 +22,7 @@ class RetryHandler:
     async def smart_retry_page(
         self,
         submissions: List[Dict],
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> Dict:
         """
         Re-process all abnormal entries on the current page
@@ -141,7 +140,7 @@ class RetryHandler:
     async def batch_reanalyze(
         self,
         submissions: List[Dict],
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> Dict:
         """
         Re-analyze selected entries using AI with fresh IMAP content
