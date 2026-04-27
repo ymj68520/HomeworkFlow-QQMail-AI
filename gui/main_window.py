@@ -148,9 +148,10 @@ class MainWindow(QMainWindow):
         # 子记录点击（新功能）
         if hasattr(self.table, 'childClicked'):
             self.table.childClicked.connect(self.on_child_record_clicked)
-        
-        # 表格选择变更
-        self.table.itemSelectionChanged.connect(self.update_status_info)
+
+        # 表格选择变更（兼容旧版 QTableWidget）
+        if hasattr(self.table, 'itemSelectionChanged'):
+            self.table.itemSelectionChanged.connect(self.update_status_info)
 
         # 分页导航
         self.pagination.pageChanged.connect(self.on_page_changed)
