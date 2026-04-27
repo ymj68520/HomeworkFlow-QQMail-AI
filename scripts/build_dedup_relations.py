@@ -65,7 +65,7 @@ def build_deduplication_relations():
 
         # 5. 提交更改
         db_session.commit()
-        print(f"✓ 成功更新 {updated_count} 条记录")
+        print(f"[OK] 成功更新 {updated_count} 条记录")
         print(f"  - 主记录: {len([s for s in all_submissions if s.is_primary])}")
         print(f"  - 子记录: {len([s for s in all_submissions if not s.is_primary])}")
 
@@ -95,7 +95,7 @@ def build_deduplication_relations():
         return True
 
     except Exception as e:
-        print(f"✗ 错误: {e}")
+        print(f"[ERROR] 错误: {e}")
         import traceback
         traceback.print_exc()
         db_session.rollback()
