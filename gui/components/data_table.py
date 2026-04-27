@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QHBoxLayout
 from PySide6.QtCore import Signal
 
 from gui.components.collapsible_row import CollapsibleRow
@@ -66,35 +66,33 @@ class DataTable(QWidget):
         self.main_layout.addStretch()
 
     def _add_header(self):
-        “””添加表格头部”””
-        from PySide6.QtWidgets import QHBoxLayout
-
+        """添加表格头部"""
         header_frame = QFrame()
-        header_frame.setStyleSheet(f”””
+        header_frame.setStyleSheet(f"""
             QFrame {{
                 background-color: {palette.SURFACE};
                 border: none;
                 border-bottom: 2px solid {palette.BORDER};
                 padding: 12px 8px;
             }}
-        “””)
+        """)
 
         header_layout = QHBoxLayout(header_frame)
         header_layout.setContentsMargins(12, 8, 12, 8)
         header_layout.setSpacing(12)
 
         # 列标题
-        headers = [“学号”, “姓名”, “作业名称”, “提交时间”, “状态”, “本地路径”]
+        headers = ["学号", "姓名", "作业名称", "提交时间", "状态", "本地路径"]
         for header_text in headers:
             label = QLabel(header_text)
-            label.setStyleSheet(f”””
+            label.setStyleSheet(f"""
                 QLabel {{
                     color: {palette.TEXT_SECONDARY};
                     font-weight: bold;
                     font-size: 11px;
                     text-transform: uppercase;
                 }}
-            “””)
+            """)
             header_layout.addWidget(label)
 
         # 弹性空间
@@ -108,19 +106,19 @@ class DataTable(QWidget):
         self.main_layout.addWidget(header_frame)
 
     def _on_row_double_clicked(self, data: dict):
-        “””
+        """
         处理主记录双击事件
 
         Args:
             data: 主记录数据
-        “””
+        """
         self.rowDoubleClicked.emit(data)
 
     def _on_child_clicked(self, data: dict):
-        “””
+        """
         处理子记录点击事件
 
         Args:
             data: 子记录数据
-        “””
+        """
         self.childClicked.emit(data)
