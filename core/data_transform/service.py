@@ -101,9 +101,9 @@ class DataTransformService:
                 version_children, possible_dup_children
             )
 
-            # 构建结果
+            # 构建结果 - 使用 CollapsibleRow 期望的格式
             result.append({
-                **primary_dict,
+                'primary_submission': primary_dict,  # 主记录嵌套在 primary_submission 下
                 'child_count': len(children),
                 'version_count': len(version_children),
                 'possible_dup_count': len(possible_dup_children),
