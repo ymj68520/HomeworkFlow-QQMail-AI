@@ -157,9 +157,8 @@ class MainWindow(QMainWindow):
         self.sidebar.btn_delete.clicked.connect(self.on_batch_delete)
         self.sidebar.btn_export.clicked.connect(self.on_export_excel)
 
-        # New feature buttons
-        self.sidebar.btn_smart_retry.clicked.connect(self.on_smart_retry)
-        self.sidebar.btn_batch_reanalyze.clicked.connect(self.on_batch_reanalyze)
+        # 刷新按钮
+        self.refresh_btn.clicked.connect(self.on_refresh_clicked)
 
         # 刷新按钮
         self.refresh_btn.clicked.connect(self.on_refresh_clicked)
