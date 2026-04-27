@@ -440,6 +440,105 @@ class DatabaseOperations:
             return None
         return self.session.query(Submission).filter_by(message_id=message_id).first()
 
+    def get_submissions_bulk(self, uids: List[str] = None, message_ids: List[str] = None) -> Dict[str, Submission]:
+        """
+        批量查询提交记录 - 性能优化版本
+
+        Args:
+            uids: 邮件UID列表
+            message_ids: Message-ID列表
+
+        Returns:
+            字典 {uid/message_id: Submission}
+
+        注意: 此方法只读，不使用写队列装饰器
+        """
+        result = {}
+
+        if not uids and not message_ids:
+            return result
+
+        try:
+            # 构建查询条件
+            conditions = []
+            lookup_keys = []  # 用于构建返回字典的键
+
+            if uids:
+                conditions.append(Submission.email_uid.in_(uids))
+                lookup_keys.extend([(u, 'uid') for u in uids])
+
+            if message_ids:
+                # 过滤掉空的message_id
+                valid_message_ids = [m for m in message_ids if m]
+                if valid_message_ids:
+                    conditions.append(Submission.message_id.in_(valid_message_ids))
+                    lookup_keys.extend([(m, 'msgid') for m in valid_message_ids])
+
+            if not conditions:
+                return result
+
+            # 使用OR条件组合查询，一次获取所有记录
+            from sqlalchemy import or_
+            query = self.session.query(Submission).filter(or_(*conditions))
+
+            # 预加载关联数据以避免N+1查询
+            from sqlalchemy.orm import joinedload
+            query = query.options(
+                joinedload(Submission.student),
+                joinedload(Submission.assignment)
+            )
+
+            submissions = query.all()
+
+            # 构建返回字典，同时支持uid和message_id作为键
+            for sub in submissions:
+                if sub.email_uid:
+                    result[sub.email_uid] = sub
+                if sub.message_id:
+                    result[sub.message_id] = sub
+
+            return result
+
+        except Exception as e:
+            print(f"Error in bulk query: {e}")
+            import traceback
+            traceback.print_exc()
+            return result
+
+    def get_submissions_dict(self, uids: List[str]) -> Dict[str, Dict]:
+        """
+        批量查询并返回字典格式的提交信息 - 用于UI显示
+
+        Args:
+            uids: 邮件UID列表
+
+        Returns:
+            字典 {uid: submission_dict}
+        """
+        submissions = self.get_submissions_bulk(uids=uids)
+        result = {}
+
+        for uid, sub in submissions.items():
+            result[uid] = {
+                'id': sub.id,
+                'student_id': sub.student.student_id if sub.student else "Unknown",
+                'name': sub.student.name if sub.student else "Unknown",
+                'email': sub.student.email if sub.student else sub.sender_email,
+                'assignment_name': sub.assignment.name if sub.assignment else "Unknown",
+                'email_uid': sub.email_uid,
+                'message_id': sub.message_id,
+                'submission_time': sub.submission_time,
+                'is_late': sub.is_late,
+                'is_downloaded': sub.is_downloaded,
+                'is_replied': sub.is_replied,
+                'local_path': sub.local_path,
+                'status': getattr(sub, 'status', 'pending'),
+                'error_message': getattr(sub, 'error_message', None),
+                'body': getattr(sub, 'body', None)
+            }
+
+        return result
+
     @_queued_write
     def update_submission_local_path(self, submission_id: int, local_path: str) -> bool:
         """Update submission local path"""
@@ -470,6 +569,91 @@ class DatabaseOperations:
             self.session.rollback()
             print(f"Error marking replied: {e}")
             return False
+
+    @_queued_write
+    def mark_bulk_replied(self, submission_ids: List[int]) -> int:
+        """
+        批量标记为已回复 - 性能优化版本
+
+        Args:
+            submission_ids: 提交记录ID列表
+
+        Returns:
+            成功更新的记录数
+        """
+        try:
+            count = self.session.query(Submission).filter(
+                Submission.id.in_(submission_ids)
+            ).update({
+                'is_replied': True,
+                'status': 'completed'
+            }, synchronize_session=False)
+
+            self.session.commit()
+            return count
+        except Exception as e:
+            self.session.rollback()
+            print(f"Error in bulk mark replied: {e}")
+            return 0
+
+    @_queued_write
+    def update_submissions_status_bulk(self, submission_ids: List[int], status: str) -> int:
+        """
+        批量更新提交状态 - 性能优化版本
+
+        Args:
+            submission_ids: 提交记录ID列表
+            status: 新状态
+
+        Returns:
+            成功更新的记录数
+        """
+        try:
+            # 根据状态设置相应的字段
+            update_data = {'status': status}
+
+            if status == 'completed':
+                update_data['is_replied'] = True
+                update_data['is_downloaded'] = True
+            elif status == 'unreplied':
+                update_data['is_downloaded'] = True
+            elif status == 'pending':
+                update_data['is_downloaded'] = False
+                update_data['is_replied'] = False
+
+            count = self.session.query(Submission).filter(
+                Submission.id.in_(submission_ids)
+            ).update(update_data, synchronize_session=False)
+
+            self.session.commit()
+            return count
+        except Exception as e:
+            self.session.rollback()
+            print(f"Error in bulk status update: {e}")
+            return 0
+
+    @_queued_write
+    def delete_submissions_bulk(self, submission_ids: List[int]) -> int:
+        """
+        批量删除提交记录 - 性能优化版本
+
+        Args:
+            submission_ids: 提交记录ID列表
+
+        Returns:
+            成功删除的记录数
+        """
+        try:
+            count = self.session.query(Submission).filter(
+                Submission.id.in_(submission_ids)
+            ).delete(synchronize_session=False)
+
+            self.session.commit()
+            return count
+        except Exception as e:
+            self.session.rollback()
+            print(f"Error in bulk delete: {e}")
+            return 0
 
     @_queued_write
     def mark_late_submissions(self, assignment_name: str) -> int:

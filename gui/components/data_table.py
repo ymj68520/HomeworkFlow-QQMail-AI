@@ -156,6 +156,101 @@ class DataTable(QTableWidget):
         
         self.setRowHeight(row, 52)
 
+    def set_data_bulk(self, data_list: list):
+        """
+        批量设置数据 - 性能优化版本
+
+        一次性设置所有行，避免逐行添加导致的多次重绘
+
+        Args:
+            data_list: 数据字典列表，每个字典的键应与表头文字对应
+        """
+        # 临时禁用更新
+        self.setUpdatesEnabled(False)
+
+        try:
+            # 设置总行数
+            self.setRowCount(len(data_list))
+
+            # 批量创建所有行的数据
+            for row, data in enumerate(data_list):
+                for col in range(self.columnCount()):
+                    header_text = self.horizontalHeaderItem(col).text()
+                    val = data.get(header_text, "")
+
+                    if header_text == "状态":
+                        # 特殊处理状态列，渲染 Badge
+                        color_type = "primary"
+                        val_str = str(val)
+                        if "完成" in val_str:
+                            color_type = "success"
+                        elif "失败" in val_str or "错误" in val_str:
+                            color_type = "error"
+                        elif "未处理" in val_str or "pending" in val_str.lower():
+                            color_type = "warning"
+
+                        badge = Badge(val_str, color_type=color_type)
+                        container = self._wrap_widget(badge)
+                        self.setCellWidget(row, col, container)
+
+                        # 设置数据到UserRole
+                        item = QTableWidgetItem("")
+                        item.setData(Qt.UserRole, val)
+                        self.setItem(row, col, item)
+                    else:
+                        item = QTableWidgetItem(str(val))
+                        item.setData(Qt.UserRole, val)
+                        self.setItem(row, col, item)
+
+                self.setRowHeight(row, 52)
+
+        finally:
+            # 重新启用更新并触发一次重绘
+            self.setUpdatesEnabled(True)
+
+    def update_rows_bulk(self, updates: dict):
+        """
+        批量更新指定行 - 增量更新
+
+        Args:
+            updates: {row_index: {column_header: new_value}}
+        """
+        self.setUpdatesEnabled(False)
+
+        try:
+            for row, row_data in updates.items():
+                if row >= self.rowCount():
+                    continue
+
+                for col in range(self.columnCount()):
+                    header_text = self.horizontalHeaderItem(col).text()
+                    if header_text in row_data:
+                        val = row_data[header_text]
+
+                        if header_text == "状态":
+                            # 更新状态列的Badge
+                            color_type = "primary"
+                            val_str = str(val)
+                            if "完成" in val_str:
+                                color_type = "success"
+                            elif "失败" in val_str or "错误" in val_str:
+                                color_type = "error"
+
+                            badge = Badge(val_str, color_type=color_type)
+                            container = self._wrap_widget(badge)
+                            self.setCellWidget(row, col, container)
+
+                            item = self.item(row, col)
+                            if item:
+                                item.setData(Qt.UserRole, val)
+                        else:
+                            item = self.item(row, col)
+                            if item:
+                                item.setText(str(val))
+                                item.setData(Qt.UserRole, val)
+        finally:
+            self.setUpdatesEnabled(True)
+
     def _wrap_widget(self, widget):
         """辅助方法：将组件居中包裹在容器中"""
         from PySide6.QtWidgets import QWidget, QHBoxLayout
