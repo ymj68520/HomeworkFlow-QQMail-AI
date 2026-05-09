@@ -187,7 +187,7 @@ class EmailLog(Base):
     error_message = Column(Text)
 
 class AIExtractionCache(Base):
-    """AI extraction cache table"""
+    """AI extraction cache table - supports both single and multi-assignment caching"""
     __tablename__ = 'ai_extraction_cache'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -197,6 +197,13 @@ class AIExtractionCache(Base):
     assignment_name = Column(String(50))
     confidence = Column(Float)
     is_fallback = Column(Boolean, default=False)
+
+    # Multi-assignment cache fields (JSON format)
+    cache_data = Column(Text)  # JSON string for complete detection results
+
+    # Cache metadata
+    cache_type = Column(String(20), default='single')  # 'single' or 'multi'
+
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

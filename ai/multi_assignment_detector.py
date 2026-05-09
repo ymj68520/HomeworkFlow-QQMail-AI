@@ -3,6 +3,7 @@
 import json
 import hashlib
 import asyncio
+import logging
 from typing import Dict, List, Optional
 from openai import AsyncOpenAI
 from config.settings import settings
@@ -12,6 +13,8 @@ from ai.prompts import (
     get_multi_assignment_body_prompt
 )
 from database.async_operations import async_db
+
+logger = logging.getLogger(__name__)
 
 
 class MultiAssignmentDetector:
@@ -112,7 +115,7 @@ class MultiAssignmentDetector:
             result['detection_method'] = 'subject'
             return self._validate_result(result, attachments)
         except Exception as e:
-            print(f"Error in subject analysis: {e}")
+            logger.error(f"Error in subject analysis: {e}")
             return self._single_assignment_result()
 
     async def _analyze_filenames(self, subject: str, sender: str, attachments: List[Dict]) -> Dict:
@@ -123,7 +126,7 @@ class MultiAssignmentDetector:
             result['detection_method'] = 'filename'
             return self._validate_result(result, attachments)
         except Exception as e:
-            print(f"Error in filename analysis: {e}")
+            logger.error(f"Error in filename analysis: {e}")
             return self._single_assignment_result()
 
     async def _analyze_body(self, subject: str, sender: str, attachments: List[Dict], email_body: Dict) -> Dict:
@@ -138,7 +141,7 @@ class MultiAssignmentDetector:
             result['detection_method'] = 'body'
             return self._validate_result(result, attachments)
         except Exception as e:
-            print(f"Error in body analysis: {e}")
+            logger.error(f"Error in body analysis: {e}")
             return self._single_assignment_result()
 
     async def _call_ai(self, prompt: str) -> Dict:
@@ -159,10 +162,10 @@ class MultiAssignmentDetector:
             result = json.loads(response.choices[0].message.content)
             return result
         except asyncio.TimeoutError:
-            print("AI extraction timeout")
+            logger.error("AI extraction timeout")
             return self._single_assignment_result()
         except Exception as e:
-            print(f"AI extraction error: {e}")
+            logger.error(f"AI extraction error: {e}")
             return self._single_assignment_result()
 
     def _validate_result(self, result: Dict, attachments: List[Dict]) -> Dict:
@@ -219,7 +222,7 @@ class MultiAssignmentDetector:
             }
             await async_db.save_multi_assignment_cache(cache_key, cache_data)
         except Exception as e:
-            print(f"Warning: Failed to save multi-assignment cache: {e}")
+            logger.error(f"Warning: Failed to save multi-assignment cache: {e}")
 
 
 # Global instance

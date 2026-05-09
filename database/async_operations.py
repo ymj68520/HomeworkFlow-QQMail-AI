@@ -584,23 +584,41 @@ class AsyncDatabaseOperations:
                 .where(AIExtractionCache.email_uid == cache_key)
             )
             cache_entry = result.scalar_one_or_none()
-            if cache_entry:
-                return {
-                    'is_multi_assignment': True,
-                    'is_complete': True,
-                    'cached': True
-                }
+            if cache_entry and cache_entry.cache_type == 'multi' and cache_entry.cache_data:
+                try:
+                    import json
+                    cached_data = json.loads(cache_entry.cache_data)
+                    cached_data['cached'] = True
+                    return cached_data
+                except Exception as e:
+                    logger.error(f"Error parsing multi-assignment cache data: {e}")
+                    return None
             return None
 
     async def save_multi_assignment_cache(self, cache_key: str, result: Dict) -> bool:
         """Save multi-assignment detection result to cache"""
         async with get_async_session()() as session:
             try:
+                import json
+
                 cache_entry = await session.execute(
                     select(AIExtractionCache)
                     .where(AIExtractionCache.email_uid == cache_key)
                 )
                 cache_entry = cache_entry.scalar_one_or_none()
+
+                # Serialize complete result to JSON
+                cache_data = json.dumps({
+                    'is_multi_assignment': result.get('is_multi_assignment', False),
+                    'is_complete': result.get('is_complete', False),
+                    'detection_method': result.get('detection_method', 'none'),
+                    'assignments': result.get('assignments', []),
+                    'unassigned_attachments': result.get('unassigned_attachments', []),
+                    'overall_confidence': result.get('overall_confidence', 0.0),
+                    'student_id': result.get('student_id'),
+                    'name': result.get('name'),
+                    'reasoning': result.get('reasoning', '')
+                })
 
                 if cache_entry:
                     # Update existing entry
@@ -608,6 +626,8 @@ class AsyncDatabaseOperations:
                     cache_entry.name = result.get('name')
                     cache_entry.assignment_name = result.get('detection_method')
                     cache_entry.confidence = result.get('overall_confidence', 0.0)
+                    cache_entry.cache_data = cache_data
+                    cache_entry.cache_type = 'multi'
                     cache_entry.is_fallback = False
                 else:
                     # Create new entry
@@ -617,11 +637,14 @@ class AsyncDatabaseOperations:
                         name=result.get('name'),
                         assignment_name=result.get('detection_method'),
                         confidence=result.get('overall_confidence', 0.0),
+                        cache_data=cache_data,
+                        cache_type='multi',
                         is_fallback=False
                     )
                     session.add(cache_entry)
 
                 await session.commit()
+                logger.debug(f"Multi-assignment cache saved for {cache_key}")
                 return True
             except Exception as e:
                 await session.rollback()
