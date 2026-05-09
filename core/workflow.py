@@ -3,6 +3,8 @@ from datetime import datetime
 from typing import Optional, Dict
 from mail.parser import mail_parser_inbox as mail_parser, mail_parser_target
 from ai.extractor import ai_extractor
+from ai.multi_assignment_detector import multi_assignment_detector
+from core.multi_assignment_processor import multi_assignment_processor
 from database.operations import db
 from database.async_operations import async_db
 from storage.manager import storage_manager
@@ -104,68 +106,93 @@ class AssignmentWorkflow:
                 )
                 return {'success': True, 'action': 'marked_read', 'reason': 'no_attachments'}
 
-            # 3. AI提取学生信息
-            print("Extracting student info using AI...")
-            student_info = await self.ai.extract_student_info(
+            # 3. 多作业检测 (NEW)
+            print("Checking for multi-assignment submission...")
+            multi_result = await multi_assignment_detector.detect_multi_assignment(
                 subject=email_data['subject'],
                 sender=email_data['sender_email'],
-                attachments=email_data['attachments']
+                attachments=email_data['attachments'],
+                email_body=email_data.get('email_body')
             )
 
-            print(f"AI Result: is_assignment={student_info['is_assignment']}")
-            print(f"  student_id={student_info.get('student_id')}")
-            print(f"  name={student_info.get('name')}")
-            print(f"  assignment={student_info.get('assignment_name')}")
+            print(f"Multi-assignment detection: {multi_result.get('detection_method', 'none')}")
 
-            # NEW: Check for Unknown fields and add to pending retry
-            has_unknown = (
-                not student_info.get('student_id') or
-                not student_info.get('name') or
-                not student_info.get('assignment_name')
-            )
-
-            if has_unknown and student_info.get('is_assignment'):
-                # Add to pending batch retry
-                self.pending_retry.append({
-                    'uid': email_uid,
-                    'subject': email_data['subject'],
-                    'from': email_data['from'],
-                    'attachments': email_data['attachments'],
-                    'previous_result': student_info,
-                    'email_data': email_data
-                })
-                print(f"Added to batch retry list (Unknown fields detected)")
-
-            # 4. 判断是否为作业提交
-            if not student_info.get('is_assignment'):
-                print("Not an assignment submission, marking as read")
-                self.parser.mark_as_read(email_uid)
-                self.db.log_email_action(
+            # 4. 路由到对应处理流程
+            if multi_result['is_multi_assignment'] and multi_result['is_complete']:
+                # 多作业流程 (NEW)
+                print("Processing as multi-assignment submission")
+                return await multi_assignment_processor.process_multi_assignment(
                     email_uid=email_uid,
-                    action='marked_read',
-                    folder='INBOX',
-                    details='Not an assignment'
+                    email_data=email_data,
+                    detection_result=multi_result
                 )
-                return {'success': True, 'action': 'marked_read', 'reason': 'not_assignment'}
+            else:
+                # 单作业流程 (现有) - 保持所有现有逻辑不变
+                if multi_result.get('is_multi_assignment') and not multi_result.get('is_complete'):
+                    print("Multi-assignment detected but incomplete, falling back to single assignment")
 
-            # 5. 验证必要信息
-            student_id = student_info.get('student_id')
-            student_name = student_info.get('name')
-            assignment_name = student_info.get('assignment_name')
-
-            if not all([student_id, student_name, assignment_name]):
-                print("Missing required information, marking as read")
-                self.parser.mark_as_read(email_uid)
-                self.db.log_email_action(
-                    email_uid=email_uid,
-                    action='marked_read',
-                    folder='INBOX',
-                    details=f'Missing info: student_id={student_id}, name={student_name}, assignment={assignment_name}'
+                # 5. AI提取学生信息
+                print("Extracting student info using AI...")
+                student_info = await self.ai.extract_student_info(
+                    subject=email_data['subject'],
+                    sender=email_data['sender_email'],
+                    attachments=email_data['attachments']
                 )
-                return {'success': True, 'action': 'marked_read', 'reason': 'missing_info'}
 
-            # 6. 继续处理正常流程
-            return await self._process_extracted_info(email_uid, email_data, student_info)
+                print(f"AI Result: is_assignment={student_info['is_assignment']}")
+                print(f"  student_id={student_info.get('student_id')}")
+                print(f"  name={student_info.get('name')}")
+                print(f"  assignment={student_info.get('assignment_name')}")
+
+                # NEW: Check for Unknown fields and add to pending retry
+                has_unknown = (
+                    not student_info.get('student_id') or
+                    not student_info.get('name') or
+                    not student_info.get('assignment_name')
+                )
+
+                if has_unknown and student_info.get('is_assignment'):
+                    # Add to pending batch retry
+                    self.pending_retry.append({
+                        'uid': email_uid,
+                        'subject': email_data['subject'],
+                        'from': email_data['from'],
+                        'attachments': email_data['attachments'],
+                        'previous_result': student_info,
+                        'email_data': email_data
+                    })
+                    print(f"Added to batch retry list (Unknown fields detected)")
+
+                # 6. 判断是否为作业提交
+                if not student_info.get('is_assignment'):
+                    print("Not an assignment submission, marking as read")
+                    self.parser.mark_as_read(email_uid)
+                    self.db.log_email_action(
+                        email_uid=email_uid,
+                        action='marked_read',
+                        folder='INBOX',
+                        details='Not an assignment'
+                    )
+                    return {'success': True, 'action': 'marked_read', 'reason': 'not_assignment'}
+
+                # 7. 验证必要信息
+                student_id = student_info.get('student_id')
+                student_name = student_info.get('name')
+                assignment_name = student_info.get('assignment_name')
+
+                if not all([student_id, student_name, assignment_name]):
+                    print("Missing required information, marking as read")
+                    self.parser.mark_as_read(email_uid)
+                    self.db.log_email_action(
+                        email_uid=email_uid,
+                        action='marked_read',
+                        folder='INBOX',
+                        details=f'Missing info: student_id={student_id}, name={student_name}, assignment={assignment_name}'
+                    )
+                    return {'success': True, 'action': 'marked_read', 'reason': 'missing_info'}
+
+                # 8. 继续处理正常流程
+                return await self._process_extracted_info(email_uid, email_data, student_info)
 
         except Exception as e:
             print(f"Error processing email {email_uid}: {e}")
