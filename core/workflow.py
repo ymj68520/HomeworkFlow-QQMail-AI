@@ -10,8 +10,19 @@ from mail.imap_client import imap_client_inbox
 from mail.smtp_client import smtp_client
 from core.deduplication.service import DeduplicationService
 from core.transactions.file_operations import TransactionalFileOperation
+from core.async_status_manager import get_async_status_manager
 from config.settings import settings
-from database.models import SubmissionStatus, Submission
+from database.models import SubmissionStatus, Submission, ProcessingStatus, AIExtractionStatus, DownloadStatus, ReplyStatus
+
+# 数据变更通知器
+def _get_notifier():
+    """延迟获取通知器实例"""
+    try:
+        from core.data_change_notifier import data_change_notifier
+        return data_change_notifier
+    except (ImportError, RuntimeError):
+        # RuntimeError 可能在 Qt 应用初始化前发生
+        return None
 
 # 兼容层：旧的 deduplication_handler 现在委托给新服务
 class DeduplicationHandlerCompat:
@@ -48,6 +59,16 @@ class AssignmentWorkflow:
         self.dedup_service = DeduplicationService(async_db)  # 新服务
         self.settings = settings
         self.pending_retry = []  # Track emails needing batch retry
+        # 新增：状态管理器
+        self.status_mgr = None  # 延迟初始化
+        # 新增：监控暂停标志
+        self._monitoring_paused = False
+
+    def _get_status_manager(self):
+        """获取或创建状态管理器实例"""
+        if self.status_mgr is None:
+            self.status_mgr = get_async_status_manager(self.async_db)
+        return self.status_mgr
 
     async def process_new_email(self, email_uid: str) -> dict:
         """
@@ -234,7 +255,6 @@ class AssignmentWorkflow:
 
         # 3. 存储到数据库
         print("Saving to database...")
-        status = SubmissionStatus.UNREPLIED.value if local_path else SubmissionStatus.DOWNLOAD_FAILED.value
         import json
         body_json = json.dumps(email_data.get('email_body'), ensure_ascii=False) if email_data.get('email_body') else None
         submission = self.db.create_submission(
@@ -247,12 +267,37 @@ class AssignmentWorkflow:
             sender_name=student_name,
             submission_time=datetime.now(),
             local_path=local_path,
-            status=status,
+            status=SubmissionStatus.UNREPLIED.value,  # 默认值，会被状态管理器覆盖
             body=body_json
         )
 
         if not submission:
             return {'success': False, 'error': 'Failed to save to database', 'action': 'db_failed'}
+
+        # 新增：使用状态管理器更新状态
+        status_mgr = self._get_status_manager()
+
+        if local_path:
+            # 下载成功
+            await status_mgr.transition(
+                submission.id, 'download', DownloadStatus.SUCCESS,
+                reason='附件下载成功',
+                metadata={'local_path': local_path}
+            )
+            await status_mgr.transition(
+                submission.id, 'processing', ProcessingStatus.DOWNLOADED,
+                reason='附件下载完成'
+            )
+        else:
+            # 下载失败
+            await status_mgr.transition(
+                submission.id, 'download', DownloadStatus.FAILED,
+                reason='附件下载失败'
+            )
+            await status_mgr.transition(
+                submission.id, 'processing', ProcessingStatus.FAILED,
+                reason='附件下载失败'
+            )
 
         # 4. 添加附件记录
         for attachment in email_data['attachments']:
@@ -278,6 +323,10 @@ class AssignmentWorkflow:
         reply_sent = False
         if self.settings.ENABLE_REPLY:
             print("Sending confirmation email...")
+            await status_mgr.transition(
+                submission.id, 'reply', ReplyStatus.SENDING,
+                reason='开始发送回复邮件'
+            )
             reply_sent = self.smtp.send_reply(
                 to_email=email_data['sender_email'],
                 student_name=student_name,
@@ -285,11 +334,23 @@ class AssignmentWorkflow:
             )
         else:
             print("INFO: 邮件回复功能已禁用，跳过发送步骤。")
+            await status_mgr.transition(
+                submission.id, 'reply', ReplyStatus.SKIPPED,
+                reason='回复功能未启用'
+            )
 
         # 7. 标记已回复
         if reply_sent:
             self.db.mark_replied(submission.id)
-            self.db.update_submission_status(submission.id, SubmissionStatus.COMPLETED.value)
+            # 使用新的状态管理器
+            await status_mgr.transition(
+                submission.id, 'reply', ReplyStatus.SUCCESS,
+                reason='回复邮件发送成功'
+            )
+            await status_mgr.transition(
+                submission.id, 'processing', ProcessingStatus.REPLIED,
+                reason='处理完成'
+            )
 
         # 8. 记录日志
         log_action = 'reprocessed' if is_retry else 'processed'
@@ -301,6 +362,25 @@ class AssignmentWorkflow:
         )
 
         print(f"Successfully {log_action}: {student_id} - {student_name} - {assignment_name}")
+
+        # 发送数据变更通知
+        notifier = _get_notifier()
+        if notifier:
+            if is_retry:
+                # 重试时的更新通知
+                notifier.notify_record_updated(
+                    uid=email_uid,
+                    submission_id=submission.id,
+                    changes={'status': 'reprocessed'}
+                )
+            else:
+                # 新记录创建通知
+                notifier.notify_record_created(
+                    uid=email_uid,
+                    submission_id=submission.id,
+                    student_id=student_id,
+                    assignment_name=assignment_name
+                )
 
         return {
             'success': True,
@@ -328,10 +408,9 @@ class AssignmentWorkflow:
 
         try:
             # 1. 创建新的提交记录
-            status = SubmissionStatus.UNREPLIED.value
             import json
             body_json = json.dumps(email_data.get('email_body'), ensure_ascii=False) if email_data.get('email_body') else None
-            
+
             submission = await self.async_db.create_submission(
                 student_id=student_id,
                 assignment_name=assignment_name,
@@ -343,8 +422,18 @@ class AssignmentWorkflow:
                 submission_time=datetime.now(),
                 version=new_version,
                 is_latest=True,
-                status=status,
+                status=SubmissionStatus.UNREPLIED.value,  # 默认值
                 body=body_json
+            )
+
+            if not submission:
+                return {'success': False, 'error': 'Failed to create submission', 'action': 'duplicate_failed'}
+
+            # 新增：使用状态管理器
+            status_mgr = self._get_status_manager()
+            await status_mgr.transition(
+                submission.id, 'processing', ProcessingStatus.DOWNLOADED,
+                reason='重复提交版本创建成功'
             )
 
             if not submission:
@@ -600,6 +689,14 @@ class AssignmentWorkflow:
             print(f"  Errors: {results['errors']}")
             print("="*50 + "\n")
 
+            # 发送新邮件处理完成通知
+            notifier = _get_notifier()
+            if notifier and results['processed'] > 0:
+                notifier.notify_new_emails_processed(
+                    count=results['processed'],
+                    details=results['details']
+                )
+
             return results
 
         finally:
@@ -611,6 +708,11 @@ class AssignmentWorkflow:
 
         while True:
             try:
+                # 检查是否暂停
+                if self._monitoring_paused:
+                    await asyncio.sleep(interval)
+                    continue
+
                 await self.process_inbox()
                 await asyncio.sleep(interval)
 
@@ -620,6 +722,20 @@ class AssignmentWorkflow:
             except Exception as e:
                 print(f"Error in monitoring loop: {e}")
                 await asyncio.sleep(interval * 2)
+
+    def pause_monitoring(self):
+        """暂停后台监控"""
+        self._monitoring_paused = True
+        print("Monitoring paused")
+
+    def resume_monitoring(self):
+        """恢复后台监控"""
+        self._monitoring_paused = False
+        print("Monitoring resumed")
+
+    def is_monitoring_paused(self) -> bool:
+        """检查监控是否暂停"""
+        return self._monitoring_paused
 
 # Global workflow instance
 workflow = AssignmentWorkflow()

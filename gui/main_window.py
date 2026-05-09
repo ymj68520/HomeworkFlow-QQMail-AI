@@ -27,6 +27,10 @@ from core.workflow import workflow
 from mail.connection_manager import connection_manager
 from core.retry_handler import retry_handler
 from gui.components.progress_dialog import ProgressDialog
+from core.data_change_notifier import data_change_notifier, ChangeType
+from core.filter_manager import filter_manager
+from gui.components.filter_indicator import FilterIndicator
+from core.filter_options_registry import filter_options_registry
 
 class MainWindow(QMainWindow):
     """主窗口 - PySide6 实现"""
@@ -40,13 +44,26 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("QQ邮箱作业收发系统")
         self.resize(1400, 900)
 
-        # 状态映射
+        # 状态映射（向后兼容）
         self.STATUS_MAP = {
             'pending': '未处理',
             'ai_error': '识别异常',
             'download_failed': '下载失败',
             'unreplied': '未回复',
             'completed': '已完成',
+            'ignored': '已忽略'
+        }
+
+        # 新状态映射（独立状态系统）
+        self.PROCESSING_STATUS_MAP = {
+            'received': '已接收',
+            'processing': '处理中',
+            'extracted': '已提取',
+            'downloading': '下载中',
+            'downloaded': '已下载',
+            'replying': '回复中',
+            'replied': '已回复',
+            'failed': '处理失败',
             'ignored': '已忽略'
         }
 
@@ -59,6 +76,9 @@ class MainWindow(QMainWindow):
         self.per_page = 100
         self.total_pages = 1
         self.total_count = 0
+
+        # 筛选管理器
+        self.filter_manager = filter_manager
 
         # 初始化UI
         self.setup_ui()
@@ -98,6 +118,10 @@ class MainWindow(QMainWindow):
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.set_headers(["学号", "姓名", "作业", "收件时间", "提交时间", "状态", "本地路径"], stretch_column=6)
 
+        # 筛选模式指示器
+        self.filter_indicator = FilterIndicator()
+        self.filter_indicator.hide()  # 初始隐藏
+
         # 分页导航栏
         self.pagination = PaginationBar()
 
@@ -115,6 +139,10 @@ class MainWindow(QMainWindow):
         center_layout = QVBoxLayout(center_container)
         center_layout.setContentsMargins(20, 20, 20, 20)
         center_layout.setSpacing(15)
+
+        # 添加筛选指示器（初始隐藏）
+        center_layout.addWidget(self.filter_indicator)
+
         center_layout.addWidget(self.table)
         center_layout.addWidget(self.pagination)
 
@@ -149,9 +177,9 @@ class MainWindow(QMainWindow):
         if hasattr(self.table, 'childClicked'):
             self.table.childClicked.connect(self.on_child_record_clicked)
 
-        # 表格选择变更（兼容旧版 QTableWidget）
-        if hasattr(self.table, 'itemSelectionChanged'):
-            self.table.itemSelectionChanged.connect(self.update_status_info)
+        # 表格选择变更
+        if hasattr(self.table, 'selectionChanged'):
+            self.table.selectionChanged.connect(self.update_status_info)
 
         # 分页导航
         self.pagination.pageChanged.connect(self.on_page_changed)
@@ -165,6 +193,9 @@ class MainWindow(QMainWindow):
         self.sidebar.btn_delete.clicked.connect(self.on_batch_delete)
         self.sidebar.btn_export.clicked.connect(self.on_export_excel)
 
+        # 筛选选项刷新按钮
+        self.sidebar.refreshFiltersRequested.connect(self.on_refresh_filter_options)
+
         # New feature buttons
         self.sidebar.btn_smart_retry.clicked.connect(self.on_smart_retry)
         self.sidebar.btn_batch_reanalyze.clicked.connect(self.on_batch_reanalyze)
@@ -172,32 +203,49 @@ class MainWindow(QMainWindow):
         # 刷新按钮
         self.refresh_btn.clicked.connect(self.on_refresh_clicked)
 
+        # 筛选指示器
+        self.filter_indicator.clearRequested.connect(self.on_clear_filters)
+
         # 表格右键菜单
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.on_context_menu)
 
+        # 抽屉保存信号
+        self.drawer.save_requested.connect(self.handle_drawer_save)
+
+        # 数据变更通知 - 连接到智能刷新处理函数
+        data_change_notifier.data_changed.connect(self.on_data_changed)
+
     def load_data(self, page: int = 1, force_refresh: bool = False):
         """
-        加载数据 - 性能优化版本
+        加载数据 - 通过筛选管理器路由到对应的数据加载器
 
         Args:
             page: 页码
             force_refresh: 强制刷新，忽略缓存
         """
         try:
-            print(f"[UI] load_data called: page={page}, force_refresh={force_refresh}")
+            print(f"[UI] load_data called: page={page}, force_refresh={force_refresh}, filter_mode={self.filter_manager.is_filtering}")
             self.statusBar().showMessage("正在加载数据...")
 
-            # 使用混合数据加载器（使用原始IMAP + 优化数据库）
-            print("[UI] Calling hybrid_data_loader.get_page_data...")
-            result = hybrid_data_loader.get_page_data(page, self.per_page, force_refresh)
+            # 通过筛选管理器路由到对应的数据加载器
+            result = self.filter_manager.get_data(page, self.per_page, force_refresh)
             print(f"[UI] Got result: {len(result.get('submissions', []))} submissions, total={result.get('total', 0)}")
 
             # 处理分组格式数据（新格式）或平面数据（旧格式）
             submissions_data = result['submissions']
 
-            # 检查是否为分组格式（包含 primary_submission 和 children）
-            if submissions_data and isinstance(submissions_data[0], dict) and 'primary_submission' in submissions_data[0]:
+            # 自动合并新选项到 FilterOptionsRegistry
+            new_options_count = filter_options_registry.merge_new_options(submissions_data)
+            if new_options_count > 0:
+                print(f"[UI] Auto-merged {new_options_count} new filter options")
+
+            # 更新筛选选项新项指示器
+            self.sidebar.set_filter_new_indicator(filter_options_registry.has_new_options())
+
+            # 检查是否为分组格式（包含 primary_submission 或 assignment_name）
+            if submissions_data and isinstance(submissions_data[0], dict) and \
+               ('primary_submission' in submissions_data[0] or 'assignment_name' in submissions_data[0]):
                 # 新格式：分组数据
                 self.all_submissions = submissions_data
                 # 为过滤和搜索创建平面视图
@@ -220,13 +268,17 @@ class MainWindow(QMainWindow):
                 total_count=self.total_count
             )
 
+            # 更新筛选模式UI指示器
+            self._update_filter_mode_ui()
+
             # 更新UI - 优化：只在必要时更新下拉菜单
             self.update_dropdowns_if_needed()
 
             # 根据数据格式选择渲染方式
-            if isinstance(submissions_data[0], dict) and 'primary_submission' in submissions_data[0]:
-                # 新格式：使用 CollapsibleRow
-                print("[UI] Using CollapsibleRow rendering...")
+            if submissions_data and isinstance(submissions_data[0], dict) and \
+               ('primary_submission' in submissions_data[0] or 'assignment_name' in submissions_data[0]):
+                # 新格式：使用 CollapsibleRow 或 AssignmentGroup
+                print("[UI] Using CollapsibleRow/AssignmentGroup rendering...")
                 self.refresh_table_collapsible()
             else:
                 # 旧格式：使用批量渲染
@@ -259,19 +311,34 @@ class MainWindow(QMainWindow):
         将分组数据展平为平面列表，用于过滤和搜索
 
         Args:
-            grouped_data: 分组数据列表，每组包含 primary_submission 和 children
+            grouped_data: 分组数据列表，可能包含 assignment_name 或 primary_submission
 
         Returns:
             展平后的提交记录列表
         """
         flattened = []
-        for group in grouped_data:
-            primary = group.get('primary_submission')
+        for item in grouped_data:
+            if not isinstance(item, dict):
+                continue
+                
+            # 处理作业分组 (assignment_name + records)
+            if 'assignment_name' in item and 'records' in item:
+                flattened.extend(self._flatten_grouped_data(item['records']))
+                continue
+                
+            # 处理学生分组 (primary_submission + children)
+            primary = item.get('primary_submission')
             if primary:
                 flattened.append(primary)
-            # 添加子记录到展平列表
-            for child in group.get('children', []):
+            
+            # 添加子记录
+            for child in item.get('children', []):
                 flattened.append(child)
+                
+            # 处理平面格式 (fallback)
+            if not primary and 'student_id' in item:
+                flattened.append(item)
+                
         return flattened
 
     def load_data_legacy(self, page: int = 1):
@@ -327,7 +394,11 @@ class MainWindow(QMainWindow):
         self.sidebar.btn_batch_reanalyze.setEnabled(selected_count > 0)
 
     def update_dropdowns(self):
-        """更新下拉菜单选项"""
+        """
+        更新下拉菜单选项 - 使用 FilterOptionsRegistry
+
+        优化：从全局注册表获取选项，而不是仅从当前页面提取
+        """
         self.sidebar.student_filter.blockSignals(True)
         self.sidebar.assignment_filter.blockSignals(True)
         self.sidebar.status_filter.blockSignals(True)
@@ -337,38 +408,20 @@ class MainWindow(QMainWindow):
         curr_assignment = self.sidebar.assignment_filter.currentText()
         curr_status = self.sidebar.status_filter.currentText()
 
-        # 学生
-        students = set()
-        for sub in self.all_submissions:
-            # 处理分组格式数据
-            if isinstance(sub, dict) and 'primary_submission' in sub:
-                primary = sub['primary_submission']
-                students.add(f"{primary.get('student_id', '')} - {primary.get('student_name', '')}")
-            else:
-                # 旧格式
-                students.add(f"{sub.get('student_id', '')} - {sub.get('name', '')}")
+        # 从 FilterOptionsRegistry 获取选项
+        student_options = filter_options_registry.get_student_options(include_all=True)
+        assignment_options = filter_options_registry.get_assignment_options(include_all=True)
+        status_options = filter_options_registry.get_status_options(include_all=True)
 
+        # 更新学生下拉框
         self.sidebar.student_filter.clear()
-        self.sidebar.student_filter.addItem("全部学生")
-        self.sidebar.student_filter.addItems(sorted(list(students)))
+        self.sidebar.student_filter.addItems(student_options)
 
-        # 作业
-        assignments = set()
-        for sub in self.all_submissions:
-            # 处理分组格式数据
-            if isinstance(sub, dict) and 'primary_submission' in sub:
-                primary = sub['primary_submission']
-                assignments.add(primary.get('assignment_name', ''))
-            else:
-                # 旧格式
-                assignments.add(sub.get('assignment_name', ''))
-
+        # 更新作业下拉框
         self.sidebar.assignment_filter.clear()
-        self.sidebar.assignment_filter.addItem("全部作业")
-        self.sidebar.assignment_filter.addItems(sorted(list(assignments)))
+        self.sidebar.assignment_filter.addItems(assignment_options)
 
-        # 状态
-        status_options = ["全部状态", "正常", "逾期"] + list(self.STATUS_MAP.values())
+        # 更新状态下拉框
         self.sidebar.status_filter.clear()
         self.sidebar.status_filter.addItems(status_options)
 
@@ -391,77 +444,23 @@ class MainWindow(QMainWindow):
         智能更新下拉菜单 - 只在必要时更新
 
         优化: 避免每次翻页都重建下拉菜单
+        现在基于 FilterOptionsRegistry 的变更状态来决定是否更新
         """
-        # 检查是否需要更新（只在数据集变化时）
-        if not hasattr(self, '_last_data_hash'):
-            need_update = True
-        else:
-            # 简单哈希比较
-            def extract_key(submission):
-                """提取用于哈希的关键字段"""
-                if isinstance(submission, dict) and 'primary_submission' in submission:
-                    primary = submission['primary_submission']
-                    return (
-                        primary.get('student_id', ''),
-                        primary.get('student_name', ''),
-                        primary.get('assignment_name', '')
-                    )
-                else:
-                    return (
-                        submission.get('student_id', ''),
-                        submission.get('name', ''),
-                        submission.get('assignment_name', '')
-                    )
-
-            current_hash = hash(tuple(
-                extract_key(s) for s in self.all_submissions[:10]  # 只比较前10条
-            ))
-            need_update = (current_hash != self._last_data_hash)
-
-        if need_update:
+        # 检查是否需要更新（基于注册表的变更标记）
+        if filter_options_registry.has_new_options():
+            print("[UI] Filter options registry has new options, updating dropdowns")
             self.update_dropdowns()
-            # 更新哈希
-            def extract_key(submission):
-                """提取用于哈希的关键字段"""
-                if isinstance(submission, dict) and 'primary_submission' in submission:
-                    primary = submission['primary_submission']
-                    return (
-                        primary.get('student_id', ''),
-                        primary.get('student_name', ''),
-                        primary.get('assignment_name', '')
-                    )
-                else:
-                    return (
-                        submission.get('student_id', ''),
-                        submission.get('name', ''),
-                        submission.get('assignment_name', '')
-                    )
-
-            self._last_data_hash = hash(tuple(
-                extract_key(s) for s in self.all_submissions[:10]
-            ))
+        elif not hasattr(self, '_dropdowns_initialized'):
+            # 首次初始化
+            self.update_dropdowns()
+            self._dropdowns_initialized = True
 
     def refresh_table_collapsible(self):
         """
-        使用 CollapsibleRow 刷新表格 - 支持分组数据
-
-        处理新的分组格式数据，每个主记录可以展开显示子记录
+        使用 CollapsibleRow 或 AssignmentGroup 刷新表格 - 支持分组数据
         """
-        # 准备分组数据格式
-        grouped_data = []
-        for group in self.all_submissions:
-            if isinstance(group, dict) and 'primary_submission' in group:
-                # 已经是分组格式
-                grouped_data.append(group)
-            else:
-                # 单条记录，转换为分组格式
-                grouped_data.append({
-                    'primary_submission': group,
-                    'children': []
-                })
-
-        # 使用新的 set_data 方法（支持 CollapsibleRow）
-        self.table.set_data(grouped_data)
+        # 直接使用 DataTable 的 set_data，它已经能处理多种格式（平面、学生分组、作业分组）
+        self.table.set_data(self.all_submissions)
 
     def refresh_table_bulk(self):
         """
@@ -472,14 +471,21 @@ class MainWindow(QMainWindow):
         # 准备数据
         table_data = []
         for sub in self.filtered_submissions:
-            status_code = sub.get('status', 'pending')
+            # 兼容分组格式和平面格式
+            sub_data = sub.get('primary_submission') if isinstance(sub, dict) and 'primary_submission' in sub else sub
+            
+            # 如果依然没有 student_id (可能是作业分组项)，则跳过或展平
+            if not isinstance(sub_data, dict) or 'student_id' not in sub_data:
+                continue
+
+            status_code = sub_data.get('status', 'pending')
             status_text = self.STATUS_MAP.get(status_code, '未知')
 
-            if sub.get('is_late'):
+            if sub_data.get('is_late'):
                 status_text += " (逾期)"
 
             # 格式化收件时间
-            received_time = sub.get('received_time')
+            received_time = sub_data.get('received_time')
             if received_time:
                 if isinstance(received_time, datetime):
                     received_str = received_time.strftime('%Y-%m-%d %H:%M:%S')
@@ -489,13 +495,13 @@ class MainWindow(QMainWindow):
                 received_str = "未知"
 
             row_data = {
-                "学号": sub['student_id'],
-                "姓名": sub['name'],
-                "作业": sub['assignment_name'],
+                "学号": sub_data.get('student_id', '-'),
+                "姓名": sub_data.get('student_name') or sub_data.get('name', '-'),
+                "作业": sub_data.get('assignment_name', '-'),
                 "收件时间": received_str,
-                "提交时间": sub['submission_time'].strftime('%Y-%m-%d %H:%M:%S'),
+                "提交时间": self._format_time(sub_data.get('submission_time')),
                 "状态": status_text,
-                "本地路径": sub['local_path'] or "未下载"
+                "本地路径": sub_data.get('local_path') or "未下载"
             }
             table_data.append(row_data)
 
@@ -581,6 +587,25 @@ class MainWindow(QMainWindow):
         self.update_stats()
         self.update_status_info()
 
+    def _get_student_groups(self, data: list) -> list:
+        """
+        从各种格式中提取学生分组列表 ({primary_submission, children})
+        """
+        groups = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            if 'assignment_name' in item and 'records' in item:
+                # 作业分组 -> 提取其中的学生分组
+                groups.extend(item['records'])
+            elif 'primary_submission' in item:
+                # 已经是学生分组
+                groups.append(item)
+            elif 'student_id' in item:
+                # 平面记录 -> 包装为学生分组
+                groups.append({'primary_submission': item, 'children': []})
+        return groups
+
     def refresh_table(self):
         """
         刷新表格数据
@@ -589,63 +614,35 @@ class MainWindow(QMainWindow):
         """
         self.table.clear_data()
 
-        # 检查数据格式
-        if self.filtered_submissions and isinstance(self.filtered_submissions[0], dict) and 'primary_submission' in self.filtered_submissions[0]:
-            # 新格式：使用 CollapsibleRow
+        if not self.filtered_submissions:
+            return
+
+        # 检查是否为新格式（学生分组或作业分组）
+        first = self.filtered_submissions[0]
+        is_new_format = isinstance(first, dict) and ('primary_submission' in first or 'assignment_name' in first)
+
+        if is_new_format:
+            # 新格式：使用 DataTable.set_data 处理
             self.table.set_data(self.filtered_submissions)
         else:
-            # 旧格式：使用传统表格
-            for sub in self.filtered_submissions:
-                status_code = sub.get('status', 'pending')
-                status_text = self.STATUS_MAP.get(status_code, '未知')
-
-                if sub.get('is_late'):
-                    status_text += " (逾期)"
-
-                # 格式化收件时间
-                received_time = sub.get('received_time')
-                if received_time:
-                    if isinstance(received_time, datetime):
-                        received_str = received_time.strftime('%Y-%m-%d %H:%M:%S')
-                    else:
-                        received_str = str(received_time)
-                else:
-                    received_str = "未知"
-
-                row_data = {
-                    "学号": sub['student_id'],
-                    "姓名": sub['name'],
-                    "作业": sub['assignment_name'],
-                    "收件时间": received_str,
-                    "提交时间": sub['submission_time'].strftime('%Y-%m-%d %H:%M:%S'),
-                    "状态": status_text,
-                    "本地路径": sub['local_path'] or "未下载"
-                }
-                self.table.add_row(row_data)
+            # 旧格式：手动填充传统表格
+            self.refresh_table_bulk()
 
     def update_stats(self):
         """更新统计信息"""
-        # 处理分组格式数据
-        total = len(self.all_submissions)
+        # 获取展平的数据进行统计
+        flat_all = self._flatten_grouped_data(self.all_submissions)
+        total = len(flat_all)
 
         # 计算已下载和已回复数量
         downloaded = 0
         replied = 0
 
-        for sub in self.all_submissions:
-            if isinstance(sub, dict) and 'primary_submission' in sub:
-                # 新格式：分组数据
-                primary = sub['primary_submission']
-                if primary.get('status') in ['unreplied', 'completed']:
-                    downloaded += 1
-                if primary.get('status') == 'completed':
-                    replied += 1
-            else:
-                # 旧格式：平面数据
-                if sub.get('status') in ['unreplied', 'completed']:
-                    downloaded += 1
-                if sub.get('status') == 'completed':
-                    replied += 1
+        for sub in flat_all:
+            if sub.get('status') in ['unreplied', 'completed']:
+                downloaded += 1
+            if sub.get('status') == 'completed':
+                replied += 1
 
         self.sidebar.total_card.value_label.setText(str(total))
         self.sidebar.downloaded_card.value_label.setText(str(downloaded))
@@ -657,109 +654,183 @@ class MainWindow(QMainWindow):
         if not query:
             self.on_filter_change() # 重新应用当前过滤器
         else:
-            # 处理分组格式数据
+            # 统一转换为学生分组进行搜索
+            student_groups = self._get_student_groups(self.all_submissions)
             self.filtered_submissions = []
-            for sub in self.all_submissions:
-                if isinstance(sub, dict) and 'primary_submission' in sub:
-                    # 新格式：分组数据
-                    primary = sub['primary_submission']
-                    if query in str(primary.get('student_id', '')) or \
-                       query in str(primary.get('student_name', '')):
-                        self.filtered_submissions.append(sub)
-                else:
-                    # 旧格式：平面数据
-                    if query in str(sub.get('student_id', '')) or \
-                       query in str(sub.get('name', '')):
-                        self.filtered_submissions.append(sub)
+
+            for group in student_groups:
+                primary = group.get('primary_submission', {})
+                children = group.get('children', [])
+                all_submissions = [primary] + children
+
+                # 在主记录和子记录中搜索
+                found = False
+                for sub in all_submissions:
+                    if (query in str(sub.get('student_id', '')) or
+                        query in str(sub.get('student_name', '')) or
+                        query in str(sub.get('name', ''))):
+                        found = True
+                        break
+
+                if found:
+                    self.filtered_submissions.append(group)
 
             self.refresh_table()
 
         self.update_status_info()
 
     def on_filter_change(self):
-        """筛选逻辑"""
+        """
+        筛选逻辑 - 使用筛选管理器处理跨页筛选
+        """
+        # 获取当前筛选值
         student_filter = self.sidebar.student_filter.currentText()
         assignment_filter = self.sidebar.assignment_filter.currentText()
         status_filter = self.sidebar.status_filter.currentText()
 
-        self.filtered_submissions = self.all_submissions.copy()
+        print(f"[UI] Filter changed: student={student_filter}, assignment={assignment_filter}, status={status_filter}")
 
-        # 学生筛选
-        if student_filter != "全部学生":
-            student_id = student_filter.split(" - ")[0]
-            filtered = []
-            for sub in self.filtered_submissions:
-                if isinstance(sub, dict) and 'primary_submission' in sub:
-                    # 新格式：分组数据
-                    if sub['primary_submission'].get('student_id') == student_id:
-                        filtered.append(sub)
-                else:
-                    # 旧格式：平面数据
-                    if sub.get('student_id') == student_id:
-                        filtered.append(sub)
-            self.filtered_submissions = filtered
+        # 更新筛选管理器
+        mode_changed = self.filter_manager.update_filters(
+            student=student_filter,
+            assignment=assignment_filter,
+            status=status_filter
+        )
 
-        # 作业筛选
-        if assignment_filter != "全部作业":
-            filtered = []
-            for sub in self.filtered_submissions:
-                if isinstance(sub, dict) and 'primary_submission' in sub:
-                    # 新格式：分组数据
-                    if sub['primary_submission'].get('assignment_name') == assignment_filter:
-                        filtered.append(sub)
-                else:
-                    # 旧格式：平面数据
-                    if sub.get('assignment_name') == assignment_filter:
-                        filtered.append(sub)
-            self.filtered_submissions = filtered
+        print(f"[UI] Filter mode changed: {mode_changed}, is_filtering={self.filter_manager.is_filtering}")
 
-        # 状态筛选
-        if status_filter == "正常":
-            filtered = []
-            for sub in self.filtered_submissions:
-                if isinstance(sub, dict) and 'primary_submission' in sub:
-                    # 新格式：分组数据
-                    if not sub['primary_submission'].get('is_late', False):
-                        filtered.append(sub)
-                else:
-                    # 旧格式：平面数据
-                    if not sub.get('is_late', False):
-                        filtered.append(sub)
-            self.filtered_submissions = filtered
-        elif status_filter == "逾期":
-            filtered = []
-            for sub in self.filtered_submissions:
-                if isinstance(sub, dict) and 'primary_submission' in sub:
-                    # 新格式：分组数据
-                    if sub['primary_submission'].get('is_late', False):
-                        filtered.append(sub)
-                else:
-                    # 旧格式：平面数据
-                    if sub.get('is_late', False):
-                        filtered.append(sub)
-            self.filtered_submissions = filtered
-        elif status_filter != "全部状态":
-            target_code = None
-            for code, text in self.STATUS_MAP.items():
-                if text == status_filter:
-                    target_code = code
-                    break
+        # 如果模式改变，使缓存失效
+        if mode_changed:
+            hybrid_data_loader.invalidate_cache()
 
-            if target_code:
-                filtered = []
-                for sub in self.filtered_submissions:
-                    if isinstance(sub, dict) and 'primary_submission' in sub:
-                        # 新格式：分组数据
-                        if sub['primary_submission'].get('status') == target_code:
-                            filtered.append(sub)
-                    else:
-                        # 旧格式：平面数据
-                        if sub.get('status') == target_code:
-                            filtered.append(sub)
-                self.filtered_submissions = filtered
+        # 清空搜索框（筛选改变时重置搜索）
+        self.sidebar.search_input.blockSignals(True)
+        self.sidebar.search_input.clear()
+        self.sidebar.search_input.blockSignals(False)
 
-        self.refresh_table()
-        self.update_status_info()
+        # 重新加载数据（筛选模式下从数据库加载所有匹配记录）
+        self.load_data(page=1, force_refresh=True)
+
+        # 更新筛选模式指示器
+        self._update_filter_indicator()
+        self._update_filter_mode_restrictions()
+
+        # 更新状态栏
+        self._update_status_bar_for_filter_mode()
+
+    def _filter_assignment_groups(self, assignment_groups: list, student_filter: str,
+                                   assignment_filter: str, status_filter: str) -> list:
+        """
+        过滤作业分组格式的数据
+
+        Args:
+            assignment_groups: 作业分组列表 [{assignment_name, records}]
+            student_filter: 学生筛选条件
+            assignment_filter: 作业筛选条件
+            status_filter: 状态筛选条件
+
+        Returns:
+            过滤后的作业分组列表
+        """
+        filtered = []
+
+        for group in assignment_groups:
+            if not isinstance(group, dict):
+                continue
+
+            assignment_name = group.get('assignment_name', '')
+            records = group.get('records', [])
+
+            # 作业筛选 - 如果作业不匹配，跳过整个作业组
+            if assignment_filter != "全部作业" and assignment_name != assignment_filter:
+                continue
+
+            # 过滤该作业组内的学生组
+            filtered_records = self._filter_student_groups(
+                records, student_filter, "全部作业", status_filter
+            )
+
+            # 如果该作业组还有符合条件的学生组，保留该作业组
+            if filtered_records:
+                filtered.append({
+                    'assignment_name': assignment_name,
+                    'records': filtered_records
+                })
+
+        return filtered
+
+    def _filter_student_groups(self, student_groups: list, student_filter: str,
+                               assignment_filter: str, status_filter: str) -> list:
+        """
+        过滤学生分组格式的数据
+
+        Args:
+            student_groups: 学生分组列表 [{primary_submission, children}]
+            student_filter: 学生筛选条件
+            assignment_filter: 作业筛选条件
+            status_filter: 状态筛选条件
+
+        Returns:
+            过滤后的学生分组列表
+        """
+        filtered = []
+
+        for group in student_groups:
+            if not isinstance(group, dict):
+                continue
+
+            primary = group.get('primary_submission', {})
+            children = group.get('children', [])
+
+            # 收集该学生组的所有提交记录（主记录 + 子记录）
+            all_submissions = [primary] + children
+
+            # 学生筛选
+            if student_filter != "全部学生":
+                student_id = student_filter.split(" - ")[0]
+                if primary.get('student_id') != student_id:
+                    continue
+
+            # 作业筛选 - 检查所有提交记录
+            if assignment_filter != "全部作业":
+                has_matching_assignment = any(
+                    sub.get('assignment_name') == assignment_filter
+                    for sub in all_submissions
+                )
+                if not has_matching_assignment:
+                    continue
+
+            # 状态筛选 - 检查所有提交记录
+            if status_filter == "正常":
+                has_normal = any(
+                    not sub.get('is_late', False) for sub in all_submissions
+                )
+                if not has_normal:
+                    continue
+            elif status_filter == "逾期":
+                has_late = any(
+                    sub.get('is_late', False) for sub in all_submissions
+                )
+                if not has_late:
+                    continue
+            elif status_filter != "全部状态":
+                target_code = None
+                for code, text in self.STATUS_MAP.items():
+                    if text == status_filter:
+                        target_code = code
+                        break
+
+                if target_code:
+                    has_status = any(
+                        sub.get('status') == target_code for sub in all_submissions
+                    )
+                    if not has_status:
+                        continue
+
+            # 该学生组符合筛选条件
+            filtered.append(group)
+
+        return filtered
 
     def on_row_double_clicked(self, row_data):
         """
@@ -769,11 +840,11 @@ class MainWindow(QMainWindow):
             row_data: 行数据字典，可能来自 CollapsibleRow 或传统表格
         """
         # 处理来自 CollapsibleRow 的数据（新格式）
-        if 'student_id' in row_data and 'student_name' in row_data:
+        if 'student_id' in row_data:
             submission = row_data
             details = {
                 "学号": submission.get('student_id', ''),
-                "姓名": submission.get('student_name', ''),
+                "姓名": submission.get('student_name') or submission.get('name', ''),
                 "作业": submission.get('assignment_name', ''),
                 "收件时间": self._format_time(submission.get('received_time')),
                 "提交时间": self._format_time(submission.get('submission_time')),
@@ -782,24 +853,29 @@ class MainWindow(QMainWindow):
             }
         else:
             # 处理来自传统表格的数据（旧格式，保持向后兼容）
+            student_id = str(row_data.get('学号'))
+            assignment_name = row_data.get('作业')
+            
+            all_student_groups = self._get_student_groups(self.all_submissions)
             submission = None
-            for sub in self.all_submissions:
-                if str(sub['student_id']) == str(row_data.get('学号')) and \
-                   sub['assignment_name'] == row_data.get('作业'):
-                    submission = sub
+            for group in all_student_groups:
+                primary = group.get('primary_submission', {})
+                if str(primary.get('student_id', '')) == student_id and \
+                   primary.get('assignment_name', '') == assignment_name:
+                    submission = primary
                     break
 
             if not submission:
                 return
 
             details = {
-                "学号": submission['student_id'],
-                "姓名": submission['name'],
-                "作业": submission['assignment_name'],
+                "学号": submission.get('student_id', ''),
+                "姓名": submission.get('student_name') or submission.get('name', ''),
+                "作业": submission.get('assignment_name', ''),
                 "收件时间": row_data.get('收件时间'),
                 "提交时间": row_data.get('提交时间'),
                 "状态": row_data.get('状态'),
-                "本地路径": submission['local_path'] or "未下载"
+                "本地路径": submission.get('local_path') or "未下载"
             }
 
         # 检查是否有缓存的正文
@@ -886,7 +962,7 @@ class MainWindow(QMainWindow):
 
     def _format_status(self, record: dict) -> str:
         """
-        格式化状态文本
+        格式化状态文本 - 支持新旧状态系统
 
         Args:
             record: 记录数据字典
@@ -894,8 +970,15 @@ class MainWindow(QMainWindow):
         Returns:
             格式化的状态文本
         """
-        status_code = record.get('status', 'pending')
-        status_text = self.STATUS_MAP.get(status_code, '未知')
+        # 优先使用新的处理状态
+        processing_status = record.get('processing_status')
+        if processing_status:
+            status_text = self.PROCESSING_STATUS_MAP.get(processing_status, '未知')
+        else:
+            # 向后兼容：使用旧状态字段
+            status_code = record.get('status', 'pending')
+            status_text = self.STATUS_MAP.get(status_code, '未知')
+
         if record.get('is_late'):
             status_text += " (逾期)"
         return status_text
@@ -969,37 +1052,11 @@ class MainWindow(QMainWindow):
 
     def on_context_menu(self, pos):
         """显示右键菜单以进行批量修改"""
-        selected_rows = self.table.selectionModel().selectedRows()
-        if not selected_rows:
+        checked_rows = self.table.get_checked_rows()
+        if not checked_rows:
             return
 
-        submissions = []
-        for index in selected_rows:
-            row = index.row()
-            # 获取学号和作业名作为标识
-            student_id = self.table.item(row, 0).text()
-            assignment_name = self.table.item(row, 2).text()
-
-            for sub in self.all_submissions:
-                target_submission = None
-                target_student_id = ''
-                target_assignment_name = ''
-
-                if isinstance(sub, dict) and 'primary_submission' in sub:
-                    # 新格式：分组数据
-                    primary = sub['primary_submission']
-                    target_student_id = str(primary.get('student_id', ''))
-                    target_assignment_name = primary.get('assignment_name', '')
-                    target_submission = primary
-                else:
-                    # 旧格式：平面数据
-                    target_student_id = str(sub.get('student_id', ''))
-                    target_assignment_name = sub.get('assignment_name', '')
-                    target_submission = sub
-
-                if target_student_id == student_id and target_assignment_name == assignment_name:
-                    submissions.append(target_submission)
-                    break
+        submissions = [row.get_submission_data() for row in checked_rows]
 
         if submissions:
             popup = BatchPopup(self, submissions, on_update=lambda f, v: self.handle_batch_update(submissions, f, v))
@@ -1043,6 +1100,63 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "成功", f"已更新 {success_count}/{len(submissions)} 条记录")
             else:
                 QMessageBox.warning(self, "失败", "更新失败: 未知错误")
+        finally:
+            db_session.remove()
+
+    def handle_drawer_save(self, updated_data: dict):
+        """处理抽屉发起的单条记录更新"""
+        # 1. 获取定位信息
+        old_student_id = str(self.drawer.current_details.get("学号"))
+        old_assignment_name = self.drawer.current_details.get("作业")
+        
+        # 2. 查找原始记录
+        submission = None
+        all_student_groups = self._get_student_groups(self.all_submissions)
+        for group in all_student_groups:
+            primary = group.get('primary_submission', {})
+            if str(primary.get('student_id', '')) == old_student_id and \
+               primary.get('assignment_name', '') == old_assignment_name:
+                submission = primary
+                break
+        
+        if not submission or not submission.get('id'):
+            QMessageBox.warning(self, "失败", "无法定位记录ID")
+            return
+
+        # 3. 字段映射 (UI中文 -> 数据库英文字段)
+        new_status_text = updated_data.get("状态")
+        new_status_code = submission.get('status')
+        if new_status_text:
+            for code, text in self.STATUS_MAP.items():
+                if text == new_status_text:
+                    new_status_code = code
+                    break
+
+        try:
+            # 4. 执行完整更新
+            success = db.update_submission_full(
+                submission_id=submission['id'],
+                student_id=updated_data.get("学号", submission.get('student_id')),
+                name=updated_data.get("姓名", submission.get('student_name')),
+                assignment_name=updated_data.get("作业", submission.get('assignment_name')),
+                status=new_status_code,
+                email=submission.get('email'),
+                email_uid=submission.get('email_uid'),
+                email_subject=submission.get('email_subject'),
+                sender_email=submission.get('sender_email'),
+                submission_time=submission.get('submission_time')
+            )
+
+            if success:
+                # 5. 退出编辑模式并刷新
+                self.drawer.is_edit_mode = False
+                self.drawer._update_edit_btn_style()
+                self.load_data(self.current_page, force_refresh=True)
+                QMessageBox.information(self, "成功", "记录已成功更新")
+            else:
+                QMessageBox.warning(self, "失败", "数据库更新失败")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"更新出错: {str(e)}")
         finally:
             db_session.remove()
 
@@ -1239,9 +1353,11 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
-        # Show progress dialog
+        # Show progress dialog with initial progress
         progress = ProgressDialog(self, title="智能重试中...", cancelable=False)
-        progress.set_indeterminate()
+        # Initialize with 0 progress to show determinate state
+        progress.set_progress(0, len(abnormal_entries))
+        progress.set_status("准备处理异常条目...")
         progress.show()
 
         # Run in background thread
@@ -1249,15 +1365,20 @@ class MainWindow(QMainWindow):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
+                def make_progress_callback():
+                    """Factory function to capture closure variables correctly"""
+                    def _callback(curr, total, msg):
+                        # Capture values at the time of callback creation
+                        def _update():
+                            progress.set_progress(curr, total)
+                            progress.set_detail(msg)
+                        QTimer.singleShot(0, _update)
+                    return _callback
+
                 result = loop.run_until_complete(
                     retry_handler.smart_retry_page(
                         self.filtered_submissions,
-                        progress_callback=lambda curr, total, msg: (
-                            QTimer.singleShot(0, lambda: (
-                                progress.set_progress(curr, total),
-                                progress.set_detail(msg)
-                            ))
-                        )
+                        progress_callback=make_progress_callback()
                     )
                 )
                 # Update UI on main thread
@@ -1266,18 +1387,36 @@ class MainWindow(QMainWindow):
                 loop.close()
 
         def show_retry_result(result):
-            progress.set_complete(success=result['failed'] == 0)
-            summary = (
-                f"智能重试完成！\n\n"
-                f"总计: {result['total']} 条\n"
-                f"成功: {result['success']} 条\n"
-                f"失败: {result['failed']} 条\n"
+            # Update progress dialog to show completion
+            success = result['failed'] == 0
+            progress.set_complete(success=success)
+
+            # Build detailed summary
+            summary_parts = [
+                f"总计: {result['total']} 条",
+                f"成功: {result['success']} 条",
+                f"失败: {result['failed']} 条",
                 f"跳过: {result['skipped']} 条"
-            )
+            ]
+
+            # Add error details if any
+            if result.get('details'):
+                failed_details = [d for d in result['details'] if d.get('status') == 'failed']
+                if failed_details:
+                    summary_parts.append(f"\n\n失败详情:")
+                    for detail in failed_details[:5]:  # Show first 5 failures
+                        reason = detail.get('reason', '未知错误')[:30]
+                        summary_parts.append(f"  - {detail.get('student_id', '?')}: {reason}")
+                    if len(failed_details) > 5:
+                        summary_parts.append(f"  ... 还有 {len(failed_details) - 5} 条失败记录")
 
             if result.get('error'):
-                summary += f"\n\n错误: {result['error']}"
+                summary_parts.append(f"\n\n系统错误: {result['error']}")
 
+            summary = "智能重试完成！\n\n" + "\n".join(summary_parts)
+
+            # Close progress dialog and show result
+            progress.accept()
             QMessageBox.information(self, "智能重试结果", summary)
 
             # Refresh current page to show updated statuses
@@ -1309,9 +1448,11 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
-        # Show progress dialog
+        # Show progress dialog with initial progress
         progress = ProgressDialog(self, title="批量AI重析中...", cancelable=False)
-        progress.set_indeterminate()
+        # Initialize with 0 progress to show determinate state
+        progress.set_progress(0, len(submissions))
+        progress.set_status("准备重新分析...")
         progress.show()
 
         # Run in background thread
@@ -1319,15 +1460,20 @@ class MainWindow(QMainWindow):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
+                def make_progress_callback():
+                    """Factory function to capture closure variables correctly"""
+                    def _callback(curr, total, msg):
+                        # Capture values at the time of callback creation
+                        def _update():
+                            progress.set_progress(curr, total)
+                            progress.set_detail(msg)
+                        QTimer.singleShot(0, _update)
+                    return _callback
+
                 result = loop.run_until_complete(
                     retry_handler.batch_reanalyze(
                         submissions,
-                        progress_callback=lambda curr, total, msg: (
-                            QTimer.singleShot(0, lambda: (
-                                progress.set_progress(curr, total),
-                                progress.set_detail(msg)
-                            ))
-                        )
+                        progress_callback=make_progress_callback()
                     )
                 )
                 # Update UI on main thread
@@ -1336,17 +1482,35 @@ class MainWindow(QMainWindow):
                 loop.close()
 
         def show_reanalyze_result(result):
-            progress.set_complete(success=result['failed'] == 0)
-            summary = (
-                f"批量AI重析完成！\n\n"
-                f"总计: {result['total']} 条\n"
-                f"成功: {result['success']} 条\n"
+            # Update progress dialog to show completion
+            success = result['failed'] == 0
+            progress.set_complete(success=success)
+
+            # Build detailed summary
+            summary_parts = [
+                f"总计: {result['total']} 条",
+                f"成功: {result['success']} 条",
                 f"失败: {result['failed']} 条"
-            )
+            ]
+
+            # Add error details if any
+            if result.get('details'):
+                failed_details = [d for d in result['details'] if d.get('status') == 'failed']
+                if failed_details:
+                    summary_parts.append(f"\n\n失败详情:")
+                    for detail in failed_details[:5]:  # Show first 5 failures
+                        reason = detail.get('reason', '未知错误')[:30]
+                        summary_parts.append(f"  - {detail.get('student_id', '?')}: {reason}")
+                    if len(failed_details) > 5:
+                        summary_parts.append(f"  ... 还有 {len(failed_details) - 5} 条失败记录")
 
             if result.get('error'):
-                summary += f"\n\n错误: {result['error']}"
+                summary_parts.append(f"\n\n系统错误: {result['error']}")
 
+            summary = "批量AI重析完成！\n\n" + "\n".join(summary_parts)
+
+            # Close progress dialog and show result
+            progress.accept()
             QMessageBox.information(self, "批量AI重析结果", summary)
 
             # Refresh current page to show updated data
@@ -1394,36 +1558,235 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"刷新失败: {str(e)}")
             self.statusBar().showMessage("刷新失败")
 
+    def on_data_changed(self, change_type: str, details: dict):
+        """
+        处理数据变更通知 - 智能刷新策略
+
+        根据变更类型选择最合适的刷新方式，避免不必要的全量刷新。
+
+        Args:
+            change_type: 变更类型 (来自 ChangeType 枚举)
+            details: 变更详情
+        """
+        try:
+            print(f"[DataChange] Received: {change_type}, details: {details}")
+
+            # 处理不同的变更类型
+            if change_type == ChangeType.RECORD_UPDATED.value:
+                # 单条记录更新 - 智能增量更新
+                uid = details.get('uid')
+                submission_id = details.get('submission_id')
+                changes = details.get('changes', {})
+
+                if uid:
+                    # 更新缓存中的记录
+                    hybrid_data_loader.update_single_record(uid, changes)
+
+                    # 检查是否在当前页面，如果是则增量更新
+                    self._update_record_in_table(uid, submission_id, changes)
+
+                elif submission_id:
+                    # 没有 UID 的情况，通过 ID 查找
+                    self._update_record_by_id(submission_id, changes)
+
+            elif change_type == ChangeType.RECORD_CREATED.value:
+                # 新记录创建 - 需要重新加载（因为可能有新记录）
+                print("[DataChange] New record created, refreshing...")
+                hybrid_data_loader.invalidate_cache()
+                self.load_data(self.current_page, force_refresh=True)
+
+            elif change_type == ChangeType.RECORD_DELETED.value:
+                # 记录删除 - 从表格移除并更新统计
+                submission_id = details.get('submission_id')
+                uid = details.get('uid')
+
+                if uid:
+                    hybrid_data_loader.remove_record(uid)
+
+                # 刷新当前页
+                self.load_data(self.current_page, force_refresh=False)
+
+            elif change_type == ChangeType.BATCH_UPDATED.value:
+                # 批量更新 - 刷新当前页
+                submission_ids = details.get('submission_ids', [])
+                count = details.get('count', 0)
+
+                print(f"[DataChange] Batch updated {count} records")
+
+                # 使缓存失效
+                hybrid_data_loader.invalidate_cache()
+                # 刷新当前页
+                self.load_data(self.current_page, force_refresh=True)
+
+            elif change_type == ChangeType.BATCH_DELETED.value:
+                # 批量删除 - 刷新当前页
+                submission_ids = details.get('submission_ids', [])
+                count = details.get('count', 0)
+
+                print(f"[DataChange] Batch deleted {count} records")
+
+                # 使缓存失效
+                hybrid_data_loader.invalidate_cache()
+                # 刷新当前页
+                self.load_data(self.current_page, force_refresh=True)
+
+            elif change_type == ChangeType.PAGE_REFRESH.value:
+                # 页面刷新请求
+                page = details.get('page')
+                if page is None:
+                    page = self.current_page
+
+                print(f"[DataChange] Page refresh requested for page {page}")
+                hybrid_data_loader.invalidate_cache()
+                self.load_data(page, force_refresh=True)
+
+            elif change_type == ChangeType.NEW_EMAILS_PROCESSED.value:
+                # 新邮件处理完成 - 刷新第一页
+                count = details.get('count', 0)
+
+                print(f"[DataChange] New emails processed: {count}")
+
+                # 显示通知
+                self.statusBar().showMessage(f"检测到 {count} 封新邮件并已处理完成")
+                # 刷新第一页
+                hybrid_data_loader.invalidate_cache()
+                self.load_data(page=1, force_refresh=True)
+
+            elif change_type == ChangeType.FULL_REFRESH.value:
+                # 全量刷新请求
+                reason = details.get('reason', '')
+                print(f"[DataChange] Full refresh requested: {reason}")
+
+                hybrid_data_loader.invalidate_cache()
+                self.load_data(page=1, force_refresh=True)
+
+        except Exception as e:
+            import traceback
+            print(f"[DataChange] Error handling change: {e}")
+            traceback.print_exc()
+
+    def _update_record_in_table(self, uid: str, submission_id: int, changes: dict):
+        """
+        在表格中增量更新指定记录
+
+        Args:
+            uid: 邮件 UID
+            submission_id: 记录 ID
+            changes: 变更的字段
+        """
+        try:
+            # 检查当前页面是否包含此记录
+            found = False
+
+            # 在分组数据中查找
+            for group in self.all_submissions:
+                if not isinstance(group, dict):
+                    continue
+
+                # 处理作业分组
+                if 'assignment_name' in group and 'records' in group:
+                    for student_group in group['records']:
+                        primary = student_group.get('primary_submission', {})
+                        if primary.get('email_uid') == uid or primary.get('id') == submission_id:
+                            # 更新主记录
+                            primary.update(changes)
+                            # 更新子记录中的相同字段
+                            for child in student_group.get('children', []):
+                                for key in changes:
+                                    if key in child:
+                                        child[key] = changes[key]
+                            found = True
+                            break
+
+                # 处理学生分组
+                elif 'primary_submission' in group:
+                    primary = group['primary_submission']
+                    if primary.get('email_uid') == uid or primary.get('id') == submission_id:
+                        primary.update(changes)
+                        found = True
+                        break
+
+                # 处理平面数据
+                elif group.get('email_uid') == uid or group.get('id') == submission_id:
+                    group.update(changes)
+                    found = True
+                    break
+
+                if found:
+                    break
+
+            if found:
+                # 记录在当前页，刷新表格显示
+                print(f"[DataChange] Updated record in current page: uid={uid}")
+                self.refresh_table_collapsible()
+                self.update_stats()
+                self.update_status_info()
+            else:
+                # 记录不在当前页，检查是否需要更新统计
+                print(f"[DataChange] Record not in current page: uid={uid}")
+                self.update_stats()
+
+        except Exception as e:
+            print(f"[DataChange] Error updating record in table: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _update_record_by_id(self, submission_id: int, changes: dict):
+        """
+        通过记录 ID 更新表格中的记录
+
+        Args:
+            submission_id: 记录 ID
+            changes: 变更的字段
+        """
+        try:
+            for group in self.all_submissions:
+                if not isinstance(group, dict):
+                    continue
+
+                # 处理作业分组
+                if 'assignment_name' in group and 'records' in group:
+                    for student_group in group['records']:
+                        primary = student_group.get('primary_submission', {})
+                        if primary.get('id') == submission_id:
+                            primary.update(changes)
+                            self.refresh_table_collapsible()
+                            self.update_stats()
+                            self.update_status_info()
+                            return
+
+                # 处理学生分组
+                elif 'primary_submission' in group:
+                    primary = group['primary_submission']
+                    if primary.get('id') == submission_id:
+                        primary.update(changes)
+                        self.refresh_table_collapsible()
+                        self.update_stats()
+                        self.update_status_info()
+                        return
+
+                # 处理平面数据
+                elif group.get('id') == submission_id:
+                    group.update(changes)
+                    self.refresh_table_collapsible()
+                    self.update_stats()
+                    self.update_status_info()
+                    return
+
+        except Exception as e:
+            print(f"[DataChange] Error updating record by ID: {e}")
+            import traceback
+            traceback.print_exc()
+
     def get_selected_submissions(self) -> List[dict]:
         """
         从表格选择中获取数据对象
 
-        支持新旧两种数据格式
+        支持各种数据格式
         """
-        selected_rows = self.table.selectionModel().selectedRows()
         result = []
-
-        for index in selected_rows:
-            row = index.row()
-            student_id = self.table.item(row, 0).text()
-            assignment_name = self.table.item(row, 2).text()
-
-            # 处理分组格式数据
-            for sub in self.all_submissions:
-                if isinstance(sub, dict) and 'primary_submission' in sub:
-                    # 新格式：分组数据
-                    primary = sub['primary_submission']
-                    if str(primary.get('student_id', '')) == str(student_id) and \
-                       primary.get('assignment_name', '') == assignment_name:
-                        result.append(primary)
-                        break
-                else:
-                    # 旧格式：平面数据
-                    if str(sub.get('student_id', '')) == str(student_id) and \
-                       sub.get('assignment_name', '') == assignment_name:
-                        result.append(sub)
-                        break
-
+        for row in self.table.get_checked_rows():
+            result.append(row.get_submission_data())
         return result
 
     def start_background_monitoring(self):
@@ -1447,6 +1810,229 @@ class MainWindow(QMainWindow):
         if self.drawer.isVisible():
             self.drawer.setFixedHeight(self.height())
             self.drawer.move(self.width() - self.drawer.width(), 0)
+
+    # ==================== 筛选模式相关方法 ====================
+
+    def on_clear_filters(self):
+        """清除所有筛选条件，恢复到正常分页模式"""
+        # 如果当前不在筛选模式，无需清除
+        if not self.filter_manager.is_filtering:
+            QMessageBox.information(self, "提示", "当前没有激活的筛选条件")
+            return
+
+        # 显示确认对话框
+        filter_summary = self.filter_manager.get_filter_summary()
+        reply = QMessageBox.question(
+            self,
+            "确认清除筛选",
+            f"当前激活的筛选条件：\n\n{filter_summary}\n\n"
+            "清除筛选后将返回正常分页模式，显示所有邮件记录。\n\n"
+            "是否继续？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        # 显示进度对话框
+        progress = ProgressDialog(self, title="清除筛选中...", cancelable=False)
+        progress.set_progress(0, 100)
+        progress.set_status("正在清除筛选条件...")
+        progress.show()
+
+        def do_clear_filters():
+            """在后台线程中执行清除筛选操作"""
+            try:
+                # 步骤 1: 重置侧边栏筛选控件
+                QTimer.singleShot(0, lambda: progress.set_progress(20, 100))
+                QTimer.singleShot(0, lambda: progress.set_detail("重置筛选控件..."))
+                QApplication.processEvents()
+
+                self.sidebar.student_filter.blockSignals(True)
+                self.sidebar.assignment_filter.blockSignals(True)
+                self.sidebar.status_filter.blockSignals(True)
+
+                self.sidebar.student_filter.setCurrentIndex(0)
+                self.sidebar.assignment_filter.setCurrentIndex(0)
+                self.sidebar.status_filter.setCurrentIndex(0)
+
+                self.sidebar.student_filter.blockSignals(False)
+                self.sidebar.assignment_filter.blockSignals(False)
+                self.sidebar.status_filter.blockSignals(False)
+
+                # 步骤 2: 清空搜索框
+                QTimer.singleShot(0, lambda: progress.set_progress(40, 100))
+                QTimer.singleShot(0, lambda: progress.set_detail("清空搜索框..."))
+                QApplication.processEvents()
+
+                self.sidebar.search_input.blockSignals(True)
+                self.sidebar.search_input.clear()
+                self.sidebar.search_input.blockSignals(False)
+
+                # 步骤 3: 清除筛选管理器状态
+                QTimer.singleShot(0, lambda: progress.set_progress(60, 100))
+                QTimer.singleShot(0, lambda: progress.set_detail("重置筛选状态..."))
+                QApplication.processEvents()
+
+                mode_changed = self.filter_manager.clear_filters()
+                print(f"[UI] Filters cleared, mode_changed={mode_changed}, is_filtering={self.filter_manager.is_filtering}")
+
+                # 步骤 4: 使缓存失效
+                if mode_changed:
+                    QTimer.singleShot(0, lambda: progress.set_progress(80, 100))
+                    QTimer.singleShot(0, lambda: progress.set_detail("使缓存失效..."))
+                    QApplication.processEvents()
+                    hybrid_data_loader.invalidate_cache()
+
+                # 步骤 5: 重新加载数据
+                QTimer.singleShot(0, lambda: progress.set_progress(90, 100))
+                QTimer.singleShot(0, lambda: progress.set_detail("重新加载数据..."))
+                QApplication.processEvents()
+
+                self.load_data(page=1, force_refresh=True)
+
+                # 步骤 6: 更新UI
+                QTimer.singleShot(0, lambda: progress.set_progress(100, 100))
+                QTimer.singleShot(0, lambda: progress.set_detail("完成"))
+                QApplication.processEvents()
+
+                self._update_filter_indicator()
+                self._update_filter_mode_restrictions()
+                self._update_status_bar_for_filter_mode()
+
+                # 完成后关闭进度对话框并显示成功消息
+                QTimer.singleShot(0, lambda: show_success_message())
+
+            except Exception as e:
+                import traceback
+                print(f"[UI] Error clearing filters: {e}")
+                traceback.print_exc()
+                QTimer.singleShot(0, lambda: show_error_message(str(e)))
+
+        def show_success_message():
+            """显示成功消息"""
+            progress.set_complete(success=True)
+            progress.accept()
+            QMessageBox.information(self, "完成", "筛选条件已清除，返回正常分页模式")
+
+        def show_error_message(error_msg):
+            """显示错误消息"""
+            progress.set_complete(success=False)
+            progress.accept()
+            QMessageBox.critical(self, "错误", f"清除筛选失败: {error_msg}")
+
+        # 在后台线程中执行
+        thread = threading.Thread(target=do_clear_filters, daemon=True)
+        thread.start()
+
+    def _update_filter_indicator(self):
+        """更新筛选指示器组件"""
+        if self.filter_manager.is_filtering:
+            self.filter_indicator.set_filters(self.filter_manager.current_filters)
+        else:
+            self.filter_indicator.clear_filters()
+
+    def _update_filter_mode_ui(self):
+        """更新筛选模式相关的UI元素"""
+        if self.filter_manager.is_filtering:
+            # 筛选模式：显示筛选指示器
+            self.filter_indicator.show()
+        else:
+            # 正常模式：隐藏筛选指示器
+            self.filter_indicator.hide()
+
+    def _update_filter_mode_restrictions(self):
+        """
+        根据筛选模式更新功能限制
+
+        筛选模式下：
+        - 禁用刷新按钮
+        - 暂停后台监控
+        """
+        if self.filter_manager.is_filtering:
+            # 禁用刷新按钮
+            self.refresh_btn.setEnabled(False)
+            self.refresh_btn.setToolTip("请先清除筛选以恢复刷新功能")
+
+            # 暂停后台监控
+            self._pause_background_monitoring()
+        else:
+            # 启用刷新按钮
+            self.refresh_btn.setEnabled(True)
+            self.refresh_btn.setToolTip("刷新数据")
+
+            # 恢复后台监控
+            self._resume_background_monitoring()
+
+    def _update_status_bar_for_filter_mode(self):
+        """更新状态栏以显示当前模式"""
+        if self.filter_manager.is_filtering:
+            filter_info = self.filter_manager.get_filter_summary()
+            self.statusBar().showMessage(f"🔍 筛选模式: {filter_info}")
+        else:
+            self.statusBar().showMessage("正常分页模式")
+
+    def _pause_background_monitoring(self):
+        """暂停后台监控"""
+        try:
+            if hasattr(workflow, 'pause_monitoring'):
+                workflow.pause_monitoring()
+                print("[UI] Background monitoring paused")
+        except Exception as e:
+            print(f"[UI] Failed to pause monitoring: {e}")
+
+    def _resume_background_monitoring(self):
+        """恢复后台监控"""
+        try:
+            if hasattr(workflow, 'resume_monitoring'):
+                workflow.resume_monitoring()
+                print("[UI] Background monitoring resumed")
+        except Exception as e:
+            print(f"[UI] Failed to resume monitoring: {e}")
+
+    def on_refresh_filter_options(self):
+        """
+        手动刷新筛选选项 - 从数据库重新扫描所有选项
+        """
+        try:
+            self.statusBar().showMessage("正在刷新筛选选项...")
+            QApplication.processEvents()
+
+            # 执行手动刷新
+            result = filter_options_registry.manual_refresh()
+
+            # 更新下拉菜单
+            self.update_dropdowns()
+
+            # 清除新选项标记
+            filter_options_registry.clear_new_flag()
+            self.sidebar.set_filter_new_indicator(False)
+
+            # 显示结果
+            stats = filter_options_registry.get_stats()
+            msg = (
+                f"筛选选项刷新完成！\n\n"
+                f"学生总数: {stats['total_students']}\n"
+                f"作业总数: {stats['total_assignments']}\n"
+                f"状态总数: {stats['total_statuses']}\n\n"
+                f"上次全量扫描: {stats['last_full_scan'].strftime('%Y-%m-%d %H:%M:%S') if stats['last_full_scan'] else '未知'}"
+            )
+
+            if result.get('new_students', 0) > 0 or result.get('new_assignments', 0) > 0:
+                msg += f"\n\n本次新增：\n"
+                msg += f"学生: {result['new_students']} 个\n"
+                msg += f"作业: {result['new_assignments']} 个"
+
+            QMessageBox.information(self, "刷新完成", msg)
+            self.statusBar().showMessage("筛选选项已刷新")
+
+        except Exception as e:
+            import traceback
+            print(f"[UI] Error refreshing filter options: {e}")
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"刷新筛选选项失败: {str(e)}")
+            self.statusBar().showMessage("刷新失败")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

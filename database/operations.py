@@ -8,6 +8,15 @@ import functools
 import inspect
 from database.write_queue import write_queue
 
+# 数据变更通知器 - 延迟导入以避免循环依赖
+def _get_notifier():
+    """延迟获取通知器实例，避免启动时的 Qt 依赖问题"""
+    try:
+        from core.data_change_notifier import data_change_notifier
+        return data_change_notifier
+    except ImportError:
+        return None
+
 
 def _queued_write(func):
     """
@@ -205,6 +214,17 @@ class DatabaseOperations:
 
             self.session.commit()
             self.session.refresh(submission)
+
+            # 发送数据变更通知
+            notifier = _get_notifier()
+            if notifier:
+                notifier.notify_record_created(
+                    uid=email_uid,
+                    submission_id=submission.id,
+                    student_id=student_id,
+                    assignment_name=assignment_name
+                )
+
             return submission
 
         except Exception as e:
@@ -234,6 +254,16 @@ class DatabaseOperations:
                     submission.is_downloaded = False
                     
                 self.session.commit()
+
+                # 发送数据变更通知
+                notifier = _get_notifier()
+                if notifier:
+                    notifier.notify_record_updated(
+                        uid=submission.email_uid,
+                        submission_id=submission_id,
+                        changes={'status': status}
+                    )
+
                 return True
             return False
         except Exception as e:
@@ -311,6 +341,13 @@ class DatabaseOperations:
             submission.assignment_id = assignment.id
             submission.status = status
 
+            # 5.5 Update new processing_status if it's a new status value
+            from database.models import ProcessingStatus
+            new_processing_statuses = [s.value for s in ProcessingStatus]
+            if status in new_processing_statuses:
+                submission.processing_status = status
+                submission.processing_status_updated_at = datetime.now()
+
             # 6. Recalculate late status
             if assignment.deadline and submission.submission_time:
                 submission.is_late = submission.submission_time > assignment.deadline
@@ -325,6 +362,21 @@ class DatabaseOperations:
                 submission.is_downloaded = True
 
             self.session.commit()
+
+            # 发送数据变更通知
+            notifier = _get_notifier()
+            if notifier:
+                notifier.notify_record_updated(
+                    uid=submission.email_uid,
+                    submission_id=submission.id,
+                    changes={
+                        'student_id': student_id,
+                        'name': name,
+                        'assignment_name': assignment_name,
+                        'status': status
+                    }
+                )
+
             return submission.id
         except Exception as e:
             self.session.rollback()
@@ -375,6 +427,13 @@ class DatabaseOperations:
                     submission.is_late = False
             elif field_id == 'status':
                 submission.status = new_value
+                # 更新新的processing_status字段（如果是新状态值）
+                from database.models import ProcessingStatus
+                new_processing_statuses = [s.value for s in ProcessingStatus]
+                if new_value in new_processing_statuses:
+                    submission.processing_status = new_value
+                    submission.processing_status_updated_at = datetime.now()
+
                 if new_value == 'completed':
                     submission.is_replied = True
                     submission.is_downloaded = True
@@ -389,8 +448,18 @@ class DatabaseOperations:
                 submission.email_uid = new_value
             elif field_id == 'body':
                 submission.body = new_value
-            
+
             self.session.commit()
+
+            # 发送数据变更通知
+            notifier = _get_notifier()
+            if notifier and submission:
+                notifier.notify_record_updated(
+                    uid=submission.email_uid,
+                    submission_id=submission.id,
+                    changes={field_id: new_value}
+                )
+
             return True
         except Exception as e:
             self.session.rollback()
@@ -556,6 +625,21 @@ class DatabaseOperations:
             return False
 
     @_queued_write
+    def update_submission_uid(self, submission_id: int, new_uid: str) -> bool:
+        """Update submission email UID (needed if email moved folders)"""
+        try:
+            submission = self.session.query(Submission).filter_by(id=submission_id).first()
+            if submission:
+                submission.email_uid = new_uid
+                self.session.commit()
+                return True
+            return False
+        except Exception as e:
+            self.session.rollback()
+            print(f"Error updating submission UID: {e}")
+            return False
+
+    @_queued_write
     def mark_replied(self, submission_id: int) -> bool:
         """Mark submission as replied"""
         try:
@@ -590,6 +674,15 @@ class DatabaseOperations:
             }, synchronize_session=False)
 
             self.session.commit()
+
+            # 发送数据变更通知
+            notifier = _get_notifier()
+            if notifier and count > 0:
+                notifier.notify_batch_updated(
+                    submission_ids=submission_ids,
+                    changes={'status': 'completed', 'is_replied': True}
+                )
+
             return count
         except Exception as e:
             self.session.rollback()
@@ -626,6 +719,15 @@ class DatabaseOperations:
             ).update(update_data, synchronize_session=False)
 
             self.session.commit()
+
+            # 发送数据变更通知
+            notifier = _get_notifier()
+            if notifier and count > 0:
+                notifier.notify_batch_updated(
+                    submission_ids=submission_ids,
+                    changes={'status': status}
+                )
+
             return count
         except Exception as e:
             self.session.rollback()
@@ -649,6 +751,12 @@ class DatabaseOperations:
             ).delete(synchronize_session=False)
 
             self.session.commit()
+
+            # 发送数据变更通知
+            notifier = _get_notifier()
+            if notifier and count > 0:
+                notifier.notify_batch_deleted(submission_ids=submission_ids)
+
             return count
         except Exception as e:
             self.session.rollback()
@@ -682,8 +790,18 @@ class DatabaseOperations:
         try:
             submission = self.session.query(Submission).filter_by(id=submission_id).first()
             if submission:
+                uid = submission.email_uid
                 self.session.delete(submission)
                 self.session.commit()
+
+                # 发送数据变更通知
+                notifier = _get_notifier()
+                if notifier:
+                    notifier.notify_record_deleted(
+                        submission_id=submission_id,
+                        uid=uid
+                    )
+
                 return True
             return False
         except Exception as e:
@@ -738,6 +856,26 @@ class DatabaseOperations:
         """Get all assignments"""
         return self.session.query(Assignment).all()
 
+    def get_all_unique_students(self) -> List[str]:
+        """
+        获取所有唯一学生的格式化列表
+
+        Returns:
+            格式为 "学号 - 姓名" 的字符串列表
+        """
+        students = self.session.query(Student).order_by(Student.student_id).all()
+        return [f"{s.student_id} - {s.name}" for s in students]
+
+    def get_all_unique_assignments(self) -> List[str]:
+        """
+        获取所有唯一作业名称的列表
+
+        Returns:
+            作业名称字符串列表
+        """
+        assignments = self.session.query(Assignment).order_by(Assignment.name).all()
+        return [a.name for a in assignments]
+
     def filter_submissions(
         self,
         student_id: Optional[str] = None,
@@ -785,6 +923,120 @@ class DatabaseOperations:
                 'body': s.body
             })
         return result
+
+    def filter_submissions_paginated(
+        self,
+        student_id: Optional[str] = None,
+        assignment_name: Optional[str] = None,
+        status: Optional[str] = None,
+        is_late: Optional[bool] = None,
+        page: int = 1,
+        per_page: int = 100
+    ) -> Dict[str, Any]:
+        """
+        Filter submissions with pagination - optimized for large datasets
+
+        Args:
+            student_id: Filter by student ID (or "全部学生" for all)
+            assignment_name: Filter by assignment name (or "全部作业" for all)
+            status: Filter by status text (e.g., "未处理", "已完成", "正常", "逾期")
+            is_late: Filter by late status
+            page: Page number (1-indexed)
+            per_page: Records per page
+
+        Returns:
+            {
+                'submissions': list of submission dicts,
+                'total': int,
+                'page': int,
+                'per_page': int,
+                'total_pages': int
+            }
+        """
+        query = self.session.query(Submission).outerjoin(Student).outerjoin(Assignment)
+
+        # Apply student filter
+        if student_id and student_id != '全部学生':
+            query = query.filter(Student.student_id == student_id)
+
+        # Apply assignment filter
+        if assignment_name and assignment_name != '全部作业':
+            query = query.filter(Assignment.name == assignment_name)
+
+        # Apply status filter
+        if status:
+            if status == '正常':
+                query = query.filter(Submission.is_late == False)
+            elif status == '逾期':
+                query = query.filter(Submission.is_late == True)
+            else:
+                # Map status text to code
+                status_code = self._map_status_text_to_code(status)
+                if status_code:
+                    query = query.filter(Submission.status == status_code)
+
+        # Apply is_late filter (if specified separately)
+        if is_late is not None:
+            query = query.filter(Submission.is_late == is_late)
+
+        # Get total count
+        total = query.count()
+
+        # Apply pagination
+        offset = (page - 1) * per_page
+        submissions = query.order_by(
+            Submission.submission_time.desc(),
+            Submission.id.desc()
+        ).offset(offset).limit(per_page).all()
+
+        # Convert to dict format with all required fields
+        result = []
+        for s in submissions:
+            result.append({
+                'id': s.id,
+                'student_id': s.student.student_id if s.student else "Unknown",
+                'name': s.student.name if s.student else "Unknown",
+                'email': s.student.email if s.student else s.sender_email,
+                'assignment_name': s.assignment.name if s.assignment else "Unknown",
+                'email_uid': s.email_uid,
+                'message_id': s.message_id,
+                'submission_time': s.submission_time,
+                'is_late': s.is_late,
+                'is_downloaded': s.is_downloaded,
+                'is_replied': s.is_replied,
+                'local_path': s.local_path,
+                'status': s.status,
+                'error_message': s.error_message,
+                'body': s.body,
+                # Include relationship fields for grouping
+                'parent_id': s.parent_id,
+                'relation_type': s.relation_type if s.relation_type else None,
+                'is_primary': s.is_primary,
+                'version': s.version,
+                'is_latest': s.is_latest
+            })
+
+        total_pages = (total + per_page - 1) // per_page if total > 0 else 1
+
+        return {
+            'submissions': result,
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'total_pages': total_pages
+        }
+
+    def _map_status_text_to_code(self, status_text: str) -> Optional[str]:
+        """Map UI status text to database status code"""
+        status_map = {
+            '未处理': 'pending',
+            '识别异常': 'ai_error',
+            '下载失败': 'download_failed',
+            '未回复': 'unreplied',
+            '已完成': 'completed',
+            '已忽略': 'ignored'
+        }
+        return status_map.get(status_text)
 
     def get_all_submission_versions(
         self,

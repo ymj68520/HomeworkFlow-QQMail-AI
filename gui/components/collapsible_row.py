@@ -20,8 +20,9 @@ class CollapsibleRow(QWidget):
     """
 
     # 信号定义
-    rowDoubleClicked = Signal(dict)  # 主记录双击
-    childClicked = Signal(dict)      # 子记录点击
+    rowDoubleClicked = Signal(dict)   # 主记录双击
+    childClicked = Signal(dict)       # 子记录点击
+    checkboxChanged = Signal(bool)    # 复选框状态变更
 
     def __init__(self, data: Dict[str, Any], parent=None):
         """
@@ -66,10 +67,20 @@ class CollapsibleRow(QWidget):
         """
         frame = QFrame()
         frame.setFrameStyle(QFrame.StyledPanel)
+
+        # 计算子记录统计
+        child_count = self.data.get('child_count', 0)
+        version_count = self.data.get('version_count', 0)
+        possible_dup_count = self.data.get('possible_dup_count', 0)
+
+        # 根据子记录类型设置边框颜色
+        border_color = self._get_border_color(version_count, possible_dup_count)
+
         frame.setStyleSheet(f"""
             QFrame {{
                 background-color: {palette.SURFACE};
-                border: 1px solid {palette.BORDER};
+                border: 1px solid {border_color};
+                border-left: 4px solid {border_color};
                 border-radius: 8px;
                 padding: 8px;
             }}
@@ -92,6 +103,7 @@ class CollapsibleRow(QWidget):
             }}
         """)
         layout.addWidget(self.checkbox)
+        self.checkbox.stateChanged.connect(lambda state: self.checkboxChanged.emit(state == 2))
 
         # 学号
         layout.addWidget(QLabel(self._format_field('student_id')))
@@ -124,28 +136,14 @@ class CollapsibleRow(QWidget):
         # 弹性空间
         layout.addStretch()
 
-        # 折叠按钮
-        self.toggle_button = QPushButton("▶")
-        self.toggle_button.setFixedWidth(32)
-        self.toggle_button.setFixedHeight(32)
-        self.toggle_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {palette.PRIMARY};
-                color: white;
-                border: none;
-                border-radius: 16px;
-                font-size: 14px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: #228BE6;
-            }}
-            QPushButton:pressed {{
-                background-color: #1C7ED6;
-            }}
-        """)
-        self.toggle_button.clicked.connect(self.toggle_collapse)
-        layout.addWidget(self.toggle_button)
+        # 折叠按钮（仅在有子记录时显示）
+        child_count = self.data.get('child_count', 0)
+        if child_count > 0:
+            self.toggle_button = self._create_toggle_button()
+            self.toggle_button.clicked.connect(self.toggle_collapse)
+            layout.addWidget(self.toggle_button)
+        else:
+            self.toggle_button = None
 
         # 双击事件
         frame.mouseDoubleClickEvent = self._on_double_click
@@ -232,12 +230,86 @@ class CollapsibleRow(QWidget):
         }
         return color_map.get(status, 'primary')
 
+    def _get_border_color(self, version_count: int, possible_dup_count: int) -> str:
+        """
+        根据子记录类型获取边框颜色
+
+        Args:
+            version_count: 历史版本数量
+            possible_dup_count: 可能重复数量
+
+        Returns:
+            边框颜色十六进制值
+        """
+        if possible_dup_count > 0:
+            # 橙色 - 有可能重复的记录
+            return '#FD7E14'
+        elif version_count > 0:
+            # 蓝色 - 只有历史版本
+            return '#228BE6'
+        else:
+            # 默认边框颜色
+            return palette.BORDER
+
+    def _create_toggle_button(self) -> QPushButton:
+        """
+        创建带有计数徽章的折叠按钮
+
+        Returns:
+            折叠按钮组件
+        """
+        child_count = self.data.get('child_count', 0)
+        version_count = self.data.get('version_count', 0)
+        possible_dup_count = self.data.get('possible_dup_count', 0)
+
+        # 按钮样式 - 根据子记录类型使用不同颜色
+        if possible_dup_count > 0:
+            button_color = '#FD7E14'  # 橙色 - 有重复
+            hover_color = '#E96902'
+        else:
+            button_color = '#228BE6'  # 蓝色 - 只有版本
+            hover_color = '#1C7ED6'
+
+        button = QPushButton(f"▶ {child_count}")
+        button.setFixedWidth(60)
+        button.setFixedHeight(32)
+        button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {button_color};
+                color: white;
+                border: none;
+                border-radius: 16px;
+                font-size: 13px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {hover_color};
+            }}
+            QPushButton:pressed {{
+                background-color: {hover_color};
+            }}
+        """)
+
+        # 设置工具提示
+        tooltip_parts = []
+        if version_count > 0:
+            tooltip_parts.append(f"📚 历史版本: {version_count}条")
+        if possible_dup_count > 0:
+            tooltip_parts.append(f"🔄 可能重复: {possible_dup_count}条")
+        button.setToolTip("\n".join(tooltip_parts) if tooltip_parts else "点击展开查看子记录")
+
+        return button
+
     def toggle_collapse(self):
         """切换折叠状态"""
+        if self.toggle_button is None:
+            return
+
         self.is_expanded = not self.is_expanded
 
         # 更新按钮文本
-        self.toggle_button.setText("▼" if self.is_expanded else "▶")
+        child_count = self.data.get('child_count', 0)
+        self.toggle_button.setText("▼" if self.is_expanded else f"▶ {child_count}")
 
         # 显示/隐藏可折叠区域
         self.collapsible_area.setVisible(self.is_expanded)
@@ -373,7 +445,7 @@ class CollapsibleRow(QWidget):
 
         # 关系标签
         relation_label = child.get('relation_label', '子记录')
-        label = QLabel(relation_label)
+        label = QLabel(str(relation_label))
         label.setStyleSheet(f"""
             QLabel {{
                 color: {palette.TEXT_SECONDARY};
@@ -397,7 +469,11 @@ class CollapsibleRow(QWidget):
                     submission_time = dt.strftime('%Y-%m-%d %H:%M')
                 except:
                     pass
-            layout.addWidget(QLabel(submission_time))
+            elif isinstance(submission_time, datetime):
+                submission_time = submission_time.strftime('%Y-%m-%d %H:%M')
+            
+            # 确保传递给 QLabel 的是字符串
+            layout.addWidget(QLabel(str(submission_time)))
         else:
             layout.addWidget(QLabel('-'))
 
@@ -493,3 +569,14 @@ class CollapsibleRow(QWidget):
             checked: 是否选中
         """
         self.checkbox.setChecked(checked)
+
+    def get_submission_data(self) -> dict:
+        """
+        获取提交记录数据
+
+        Returns:
+            提交记录字典（兼容 primary_submission 嵌套格式）
+        """
+        if 'primary_submission' in self.data:
+            return self.data['primary_submission']
+        return self.data

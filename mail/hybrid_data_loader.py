@@ -99,9 +99,9 @@ class HybridDataLoader:
             raw_submissions = self._batch_merge_submission_info(page_emails)
             print(f"[HybridLoader] Got {len(raw_submissions)} raw submissions")
 
-            # 新增：转换为分组格式
-            grouped_submissions = self.data_transform.transform_to_grouped_format(raw_submissions)
-            print(f"[HybridLoader] Got {len(grouped_submissions)} grouped submissions")
+            # 新增：转换为分组格式（按作业分组）
+            grouped_submissions = self.data_transform.transform_to_grouped_format(raw_submissions, group_by_assignment=True)
+            print(f"[HybridLoader] Got {len(grouped_submissions)} assignment groups")
 
             self.imap.disconnect()
 
@@ -181,9 +181,17 @@ class HybridDataLoader:
             for child in child_records:
                 child_dict = {
                     'id': child.id,
-                    'student_id': child.student_id if hasattr(child, 'student_id') else "Unknown",
+                    'email_uid': child.email_uid,
+                    'message_id': child.message_id,
+                    'email_subject': child.email_subject,
+                    'email_from': child.email_from if hasattr(child, 'email_from') else child.sender_email,
+                    'sender_email': child.sender_email,
+                    'sender_name': child.sender_name,
+                    'received_time': None,  # 子记录没有单独的收件时间
+                    'student_id': child.student_id if hasattr(child, 'student_id') else (child.student.student_id if child.student else "Unknown"),
                     'name': child.student.name if child.student else "Unknown",
                     'student_name': child.student.name if child.student else "Unknown",  # 保持一致性
+                    'student_email': child.student.email if child.student else None,
                     'assignment_name': child.assignment.name if child.assignment else "Unknown",
                     'assignment_id': child.assignment_id if hasattr(child, 'assignment_id') else None,
                     'submission_time': child.submission_time,
@@ -192,8 +200,11 @@ class HybridDataLoader:
                     'is_replied': child.is_replied,
                     'local_path': child.local_path,
                     'status': getattr(child, 'status', 'pending'),
+                    'error_message': getattr(child, 'error_message', None),
+                    'body': getattr(child, 'body', None),
+                    'attachments': self._get_local_attachments(child.local_path) if child.local_path else [],
                     'parent_id': child.parent_id,
-                    'relation_type': child.relation_type if child.relation_type else None,
+                    'relation_type': child.relation_type if hasattr(child.relation_type, 'value') else child.relation_type,
                     'is_primary': child.is_primary,
                     'version': child.version,
                     'is_latest': child.is_latest,
@@ -236,7 +247,13 @@ class HybridDataLoader:
                 'status': getattr(db_record, 'status', 'pending'),
                 'error_message': getattr(db_record, 'error_message', None),
                 'body': getattr(db_record, 'body', None),
-                'attachments': self._get_local_attachments(db_record.local_path) if db_record.local_path else []
+                'attachments': self._get_local_attachments(db_record.local_path) if db_record.local_path else [],
+                # 去重关系字段（从数据库读取）
+                'parent_id': db_record.parent_id,
+                'relation_type': db_record.relation_type if hasattr(db_record.relation_type, 'value') else db_record.relation_type,
+                'is_primary': db_record.is_primary,
+                'version': db_record.version,
+                'is_latest': db_record.is_latest
             })
         else:
             # 数据库中没有记录 - 使用发件人邮箱作为标识

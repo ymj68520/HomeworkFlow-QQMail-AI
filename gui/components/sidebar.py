@@ -1,8 +1,8 @@
 from PySide6.QtWidgets import (
-    QVBoxLayout, QHBoxLayout, QFrame, QLabel, QLineEdit, 
-    QComboBox, QScrollArea, QWidget, QSizePolicy, QPushButton
+    QVBoxLayout, QHBoxLayout, QFrame, QLabel, QLineEdit,
+    QComboBox, QScrollArea, QWidget, QSizePolicy, QPushButton, QToolButton
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from gui.styles import palette
 from config.settings import settings
 
@@ -66,6 +66,9 @@ class Sidebar(QFrame):
     """
     侧边栏组件
     """
+    # 信号：筛选选项刷新按钮被点击
+    refreshFiltersRequested = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedWidth(280)
@@ -86,19 +89,19 @@ class Sidebar(QFrame):
         
         # 2. 搜索与过滤区
         filter_section = CollapsibleFrame("过滤器")
-        
+
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("搜索学号或姓名...")
-        
+
         self.student_filter = QComboBox()
         self.student_filter.addItem("全部学生")
-        
+
         self.assignment_filter = QComboBox()
         self.assignment_filter.addItem("全部作业")
-        
+
         self.status_filter = QComboBox()
         self.status_filter.addItem("全部状态")
-        
+
         filter_section.add_widget(QLabel("关键字搜索:"))
         filter_section.add_widget(self.search_input)
         filter_section.add_widget(QLabel("按学生筛选:"))
@@ -107,7 +110,49 @@ class Sidebar(QFrame):
         filter_section.add_widget(self.assignment_filter)
         filter_section.add_widget(QLabel("状态筛选:"))
         filter_section.add_widget(self.status_filter)
-        
+
+        # 筛选选项刷新按钮和指示器
+        filter_controls_layout = QHBoxLayout()
+        filter_controls_layout.setContentsMargins(0, 5, 0, 0)
+
+        self.refresh_filter_btn = QToolButton()
+        self.refresh_filter_btn.setText("🔄 刷新选项")
+        self.refresh_filter_btn.setToolTip("从数据库重新加载所有筛选选项")
+        self.refresh_filter_btn.setCursor(Qt.PointingHandCursor)
+        self.refresh_filter_btn.setStyleSheet("""
+            QToolButton {
+                background-color: #f3f4f6;
+                border: 1px solid #d1d5db;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 11px;
+            }
+            QToolButton:hover {
+                background-color: #e5e7eb;
+            }
+        """)
+        self.refresh_filter_btn.clicked.connect(self.refreshFiltersRequested.emit)
+
+        self.filter_new_indicator = QLabel()
+        self.filter_new_indicator.setVisible(False)
+        self.filter_new_indicator.setStyleSheet("""
+            QLabel {
+                color: #059669;
+                font-size: 10px;
+                padding: 2px 6px;
+                background-color: #d1fae5;
+                border-radius: 3px;
+            }
+        """)
+
+        filter_controls_layout.addWidget(self.refresh_filter_btn)
+        filter_controls_layout.addWidget(self.filter_new_indicator)
+        filter_controls_layout.addStretch()
+
+        filter_controls_widget = QWidget()
+        filter_controls_widget.setLayout(filter_controls_layout)
+        filter_section.add_widget(filter_controls_widget)
+
         layout.addWidget(filter_section)
 
         # 3. 批量操作区
@@ -192,8 +237,19 @@ class Sidebar(QFrame):
         self.btn_reply.setEnabled(settings.ENABLE_REPLY)
         if not settings.ENABLE_REPLY:
             self.btn_reply.setToolTip("邮件回复功能已在配置中禁用")
-            
+
         layout.addWidget(batch_section)
-        
+
         # 弹性空间
         layout.addStretch()
+
+    def set_filter_new_indicator(self, has_new: bool):
+        """
+        设置筛选选项新项指示器
+
+        Args:
+            has_new: 是否有新选项
+        """
+        self.filter_new_indicator.setVisible(has_new)
+        if has_new:
+            self.filter_new_indicator.setText("✨ 新选项")

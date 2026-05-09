@@ -23,21 +23,22 @@ class ProgressDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
 
-        # Status label
+        # Status label (main status message)
         self.status_label = QLabel("准备...")
         self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("font-weight: bold; font-size: 13px;")
         layout.addWidget(self.status_label)
 
         # Progress bar
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)  # Default to indeterminate
+        self.progress_bar.setRange(0, 0)  # Start with indeterminate
         self.progress_bar.setTextVisible(True)
         layout.addWidget(self.progress_bar)
 
-        # Detail label (shows current item)
+        # Detail label (shows current item being processed)
         self.detail_label = QLabel("")
         self.detail_label.setWordWrap(True)
-        self.detail_label.setStyleSheet("color: #666; font-size: 11px;")
+        self.detail_label.setStyleSheet("color: #666; font-size: 12px;")
         layout.addWidget(self.detail_label)
 
         # Button box
@@ -88,6 +89,8 @@ class ProgressDialog(QDialog):
             self.cancel_button.setEnabled(True)
 
         if success:
-            self.set_status("完成！")
+            self.set_status("操作完成！")
+            self.detail_label.setText("所有任务已成功处理")
         else:
             self.set_status("操作完成（有错误）")
+            self.detail_label.setText("部分任务处理失败，请查看详细信息")

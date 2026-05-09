@@ -191,14 +191,23 @@ class EmailPreviewDrawer(ctk.CTkFrame):
 
             # 状态
             status_code = data.get('status', 'pending')
+            processing_status = data.get('processing_status')
             ctk.CTkLabel(self.card_student.content_frame, text="状态:", font=("Arial", self.FONT_SIZE_SMALL)).pack(anchor="w")
-            
-            # 获取映射
+
+            # 获取映射 - 同时支持新旧状态系统
             status_map = getattr(self.master, 'STATUS_MAP', {'pending': '未处理'})
-            # 反向映射用于获取显示文本
-            status_options = list(status_map.values())
-            current_status_text = status_map.get(status_code, status_code)
-            
+            processing_status_map = getattr(self.master, 'PROCESSING_STATUS_MAP', {})
+
+            # 如果有新的处理状态，优先使用处理状态选项
+            if processing_status:
+                # 使用新的处理状态选项
+                status_options = list(processing_status_map.values())
+                current_status_text = processing_status_map.get(processing_status, processing_status)
+            else:
+                # 向后兼容：使用旧状态选项
+                status_options = list(status_map.values())
+                current_status_text = status_map.get(status_code, status_code)
+
             status_menu = ctk.CTkOptionMenu(
                 self.card_student.content_frame,
                 values=status_options,
@@ -207,6 +216,7 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             status_menu.set(current_status_text)
             status_menu.pack(fill="x", pady=(0, self.PADDING_SECTION))
             self.edit_widgets['status'] = status_menu
+            self.edit_widgets['status_type'] = 'processing' if processing_status else 'legacy'
             
         else:
             # --- 浏览模式 (原代码逻辑) ---
@@ -787,13 +797,24 @@ class EmailPreviewDrawer(ctk.CTkFrame):
                 self._show_error("验证失败", "姓名不能为空")
                 return
 
-            # 3. 状态文本映射回 Code
+            # 3. 状态文本映射回 Code - 支持新旧状态系统
             status_map = getattr(self.master, 'STATUS_MAP', {})
+            processing_status_map = getattr(self.master, 'PROCESSING_STATUS_MAP', {})
+
             new_status_code = 'pending'
-            for code, text in status_map.items():
+
+            # 优先尝试新的处理状态映射
+            for code, text in processing_status_map.items():
                 if text == new_status_text:
                     new_status_code = code
                     break
+
+            # 如果没找到，尝试旧的状态映射
+            if new_status_code == 'pending':
+                for code, text in status_map.items():
+                    if text == new_status_text:
+                        new_status_code = code
+                        break
 
             # 4. 调用数据库更新
             from database.operations import db
@@ -802,7 +823,7 @@ class EmailPreviewDrawer(ctk.CTkFrame):
             email_subject = self.current_data.get('email_subject')
             sender_email = self.current_data.get('email_from')
             submission_time = self.current_data.get('submission_time') or self.current_data.get('received_time')
-            
+
             result = db.update_submission_full(
                 submission_id=submission_id,
                 student_id=new_student_id,
@@ -818,7 +839,7 @@ class EmailPreviewDrawer(ctk.CTkFrame):
 
             if result:
                 self._show_info("成功", "记录已成功更新")
-                
+
                 # 5. 更新本地缓存数据以刷新显示
                 self.current_data['id'] = result
                 self.current_data['student_id'] = new_student_id
@@ -826,19 +847,23 @@ class EmailPreviewDrawer(ctk.CTkFrame):
                 self.current_data['email'] = new_email
                 self.current_data['status'] = new_status_code
                 self.current_data['assignment_name'] = new_assignment_name
-                
+
+                # 如果是新的处理状态，也更新对应字段
+                if new_status_code in ['received', 'processing', 'extracted', 'downloading', 'downloaded', 'replying', 'replied', 'failed', 'ignored']:
+                    self.current_data['processing_status'] = new_status_code
+
                 # 6. 退出编辑模式并刷新
                 self.is_edit_mode = False
                 self.edit_button.configure(text="📝 编辑", fg_color="#339AF0", hover_color="#228BE6")
                 self.cancel_button.pack_forget()
-                
+
                 # 刷新侧边栏
                 self._load_data(self.current_data)
-                
+
                 # 刷新主界面 (如果主界面有这个方法)
                 if hasattr(self.master, 'load_data'):
                     current_page = getattr(self.master, 'current_page', 1)
-                    self.master.load_data(current_page)
+                    self.master.load_data(current_page, force_refresh=True)
             else:
                 self._show_error("错误", "更新数据库失败，请检查日志")
 

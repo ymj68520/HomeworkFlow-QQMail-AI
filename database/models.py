@@ -20,6 +20,42 @@ class RelationType(str, enum.Enum):
     VERSION = "version"              # 版本迭代关系 (同一学生的多次提交)
     POSSIBLE_DUP = "possible_dup"    # 可能重复 (需要人工确认)
 
+# 新增：独立状态枚举
+class ProcessingStatus(str, enum.Enum):
+    """处理状态 - 追踪邮件整体处理进度"""
+    RECEIVED = "received"            # 邮件已接收
+    PROCESSING = "processing"        # 正在处理
+    EXTRACTED = "extracted"          # AI提取成功
+    DOWNLOADING = "downloading"      # 下载附件中
+    DOWNLOADED = "downloaded"        # 下载完成
+    REPLYING = "replying"            # 回复中
+    REPLIED = "replied"              # 已回复
+    FAILED = "failed"                # 处理失败
+    IGNORED = "ignored"              # 已忽略
+
+class AIExtractionStatus(str, enum.Enum):
+    """AI提取状态 - 追踪信息提取的独立状态"""
+    PENDING = "pending"              # 待提取
+    EXTRACTING = "extracting"        # 提取中
+    SUCCESS = "success"              # 提取成功
+    FAILED = "failed"                # 提取失败
+    FALLBACK = "fallback"            # 正则回退
+
+class DownloadStatus(str, enum.Enum):
+    """下载状态 - 追踪附件下载的独立状态"""
+    PENDING = "pending"              # 待下载
+    DOWNLOADING = "downloading"      # 下载中
+    SUCCESS = "success"              # 下载成功
+    FAILED = "failed"                # 下载失败
+
+class ReplyStatus(str, enum.Enum):
+    """回复状态 - 追踪回复邮件的独立状态"""
+    PENDING = "pending"              # 待回复
+    SENDING = "sending"              # 发送中
+    SUCCESS = "success"              # 发送成功
+    SKIPPED = "skipped"              # 跳过（功能未启用）
+    FAILED = "failed"                # 发送失败
+
 class Student(Base):
     __tablename__ = 'students'
 
@@ -132,6 +168,21 @@ class FileOperationsLog(Base):
     error_message = Column(String)
 
     submission = relationship('Submission', backref='file_operations')
+
+class StatusHistory(Base):
+    """状态历史记录 - 追踪所有状态变化"""
+    __tablename__ = 'status_history'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    submission_id = Column(Integer, ForeignKey('submissions.id', ondelete='CASCADE'), nullable=False, index=True)
+    status_type = Column(String(50), nullable=False, index=True)  # 'processing', 'ai_extraction', 'download', 'reply'
+    old_status = Column(String(50))
+    new_status = Column(String(50), nullable=False)
+    reason = Column(Text)
+    extra_data = Column(Text)  # JSON格式的额外信息 (避免使用metadata保留字)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    submission = relationship('Submission', backref='status_history')
 
 # Create engine and session (sync)
 engine = create_engine(

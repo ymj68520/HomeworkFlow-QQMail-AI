@@ -42,13 +42,15 @@ class DataTransformService:
 
     @staticmethod
     def transform_to_grouped_format(
-        raw_submissions: List[Any]
+        raw_submissions: List[Any],
+        group_by_assignment: bool = True
     ) -> List[Dict[str, Any]]:
         """
         将原始提交数据转换为分组格式，适合前端折叠行展示
 
         Args:
             raw_submissions: 原始提交记录列表（可以是 ORM 对象或字典）
+            group_by_assignment: 是否按作业名称分组（默认True）
 
         Returns:
             分组后的记录列表，每个主记录包含子记录和统计信息
@@ -73,8 +75,8 @@ class DataTransformService:
         # 构建关系树：{parent_id: [children]}
         relation_tree = DataTransformService.build_relation_tree(child_records)
 
-        # 转换为主记录格式
-        result = []
+        # 转换为主记录格式（先关联子记录）
+        primary_with_children = []
         for primary in primary_records:
             primary_dict = DataTransformService._record_to_dict(primary)
             primary_id = primary_dict['id']
@@ -101,14 +103,56 @@ class DataTransformService:
                 version_children, possible_dup_children
             )
 
-            # 构建结果 - 使用 CollapsibleRow 期望的格式
-            result.append({
-                'primary_submission': primary_dict,  # 主记录嵌套在 primary_submission 下
+            # 构建主记录数据
+            primary_with_children.append({
+                'primary_submission': primary_dict,
                 'child_count': len(children),
                 'version_count': len(version_children),
                 'possible_dup_count': len(possible_dup_children),
                 'is_collapsible': len(children) > 0,
                 'children': formatted_children
+            })
+
+        # 如果需要按作业分组
+        if group_by_assignment:
+            return DataTransformService._group_by_assignment(primary_with_children)
+        else:
+            return primary_with_children
+
+    @staticmethod
+    def _group_by_assignment(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        按作业名称分组记录
+
+        Args:
+            records: 主记录列表（包含子记录）
+
+        Returns:
+            按作业分组后的记录列表
+        """
+        # 按作业名称分组
+        assignment_groups = {}
+        for record in records:
+            primary = record.get('primary_submission', {})
+            assignment_name = primary.get('assignment_name', '未知作业')
+
+            if assignment_name not in assignment_groups:
+                assignment_groups[assignment_name] = []
+
+            assignment_groups[assignment_name].append(record)
+
+        # 转换为作业分组格式
+        result = []
+        for assignment_name, group_records in sorted(assignment_groups.items()):
+            # 统计该作业的信息
+            total_submissions = len(group_records)
+            total_children = sum(r.get('child_count', 0) for r in group_records)
+
+            result.append({
+                'assignment_name': assignment_name,
+                'total_submissions': total_submissions,
+                'total_children': total_children,
+                'records': group_records  # 该作业下的所有学生提交记录
             })
 
         return result

@@ -347,6 +347,142 @@ class AsyncDatabaseOperations:
 
         # 立即返回，不等待保存完成
 
+    async def update_submission(
+        self,
+        submission_id: int,
+        student_id: Optional[str] = None,
+        assignment_name: Optional[str] = None,
+        email_uid: Optional[str] = None,
+        message_id: Optional[str] = None,
+        email_subject: Optional[str] = None,
+        sender_email: Optional[str] = None,
+        sender_name: Optional[str] = None,
+        submission_time: Optional[datetime] = None,
+        body: Optional[str] = None,
+        version: Optional[int] = None,
+        is_latest: Optional[bool] = None,
+        is_primary: Optional[bool] = None,
+        parent_id: Optional[int] = None,
+        relation_type: Optional[str] = None
+    ) -> bool:
+        """
+        更新提交记录 - 用于版本合并
+
+        Args:
+            submission_id: 记录ID
+            student_id: 学号
+            assignment_name: 作业名称
+            email_uid: 邮件UID
+            message_id: 消息ID
+            email_subject: 邮件主题
+            sender_email: 发件人邮箱
+            sender_name: 发件人姓名
+            submission_time: 提交时间
+            body: 邮件正文
+            version: 版本号
+            is_latest: 是否为最新版本
+            is_primary: 是否为主记录
+            parent_id: 父记录ID
+            relation_type: 关联类型
+
+        Returns:
+            是否成功
+        """
+        async with get_async_session()() as session:
+            try:
+                # 获取记录
+                result = await session.execute(
+                    select(Submission).filter_by(id=submission_id)
+                )
+                submission = result.scalar_one_or_none()
+
+                if not submission:
+                    logger.error(f"Submission {submission_id} not found for update")
+                    return False
+
+                # 获取或创建学生
+                if student_id:
+                    student_result = await session.execute(
+                        select(Student).filter_by(student_id=student_id)
+                    )
+                    student = student_result.scalar_one_or_none()
+                    if student:
+                        submission.student_id = student.id
+
+                # 获取或创建作业
+                if assignment_name:
+                    assignment_result = await session.execute(
+                        select(Assignment).filter_by(name=assignment_name)
+                    )
+                    assignment = assignment_result.scalar_one_or_none()
+                    if assignment:
+                        submission.assignment_id = assignment.id
+
+                # 更新字段
+                if email_uid is not None:
+                    submission.email_uid = email_uid
+                if message_id is not None:
+                    submission.message_id = message_id
+                if email_subject is not None:
+                    submission.email_subject = email_subject
+                if sender_email is not None:
+                    submission.sender_email = sender_email
+                if sender_name is not None:
+                    submission.sender_name = sender_name
+                if submission_time is not None:
+                    submission.submission_time = submission_time
+                if body is not None:
+                    submission.body = body
+                if version is not None:
+                    submission.version = version
+                if is_latest is not None:
+                    submission.is_latest = is_latest
+                if is_primary is not None:
+                    submission.is_primary = is_primary
+                if parent_id is not None:
+                    submission.parent_id = parent_id
+                if relation_type is not None:
+                    submission.relation_type = relation_type
+
+                submission.updated_at = datetime.now()
+
+                await session.commit()
+                logger.info(f"Updated submission {submission_id}")
+                return True
+
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error updating submission {submission_id}: {e}")
+                import traceback
+                traceback.print_exc()
+                return False
+
+    async def mark_submission_not_latest(self, submission_id: int) -> bool:
+        """
+        标记指定记录为非最新版本
+
+        Args:
+            submission_id: 记录ID
+
+        Returns:
+            是否成功
+        """
+        async with get_async_session()() as session:
+            try:
+                result = await session.execute(
+                    update(Submission)
+                    .filter_by(id=submission_id)
+                    .values(is_latest=False)
+                )
+                await session.commit()
+                logger.info(f"Marked submission {submission_id} as not latest")
+                return True
+
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error marking submission {submission_id} as not latest: {e}")
+                return False
+
 
 # 全局实例
 async_db = AsyncDatabaseOperations()
