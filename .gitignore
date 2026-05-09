@@ -54,6 +54,7 @@ storage/*
 !storage/__init__.py
 
 # Reports & Documentation (keep docs/)
+docs/superpowers/
 *_REPORT.md
 *_SUMMARY.md
 说明.md

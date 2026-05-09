@@ -16,6 +16,19 @@ class Settings:
         self.LLM_MODEL = os.getenv('LLM_MODEL')
         self.ENABLE_REPLY = os.getenv('ENABLE_REPLY', 'true').lower() == 'true'
 
+        # Multi-assignment submission support
+        self.ENABLE_MULTI_ASSIGNMENT = os.getenv('ENABLE_MULTI_ASSIGNMENT', 'true').lower() == 'true'
+
+        self.MULTI_ASSIGNMENT_CONFIG = {
+            'enable_subject_detection': os.getenv('ENABLE_SUBJECT_DETECTION', 'true').lower() == 'true',
+            'enable_filename_detection': os.getenv('ENABLE_FILENAME_DETECTION', 'true').lower() == 'true',
+            'enable_body_detection': os.getenv('ENABLE_BODY_DETECTION', 'true').lower() == 'true',
+            'min_confidence_threshold': self._safe_float_conversion(os.getenv('MIN_CONFIDENCE_THRESHOLD', '0.7'), 0.7),
+            'strict_mode': os.getenv('STRICT_MODE', 'true').lower() == 'true',
+            'max_attachments_per_group': self._safe_int_conversion(os.getenv('MAX_ATTACHMENTS_PER_GROUP', '10'), 10),
+            'max_assignments_per_group': self._safe_int_conversion(os.getenv('MAX_ASSIGNMENTS_PER_GROUP', '5'), 5)
+        }
+
         # Email server settings
         self.IMAP_SERVER = "imap.qq.com"
         self.IMAP_PORT = 993
@@ -29,6 +42,20 @@ class Settings:
 
         # Create submissions directory if it doesn't exist
         self.SUBMISSIONS_DIR.mkdir(exist_ok=True)
+
+    def _safe_float_conversion(self, value, default):
+        """Safely convert a string value to float, returning default on failure."""
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+
+    def _safe_int_conversion(self, value, default):
+        """Safely convert a string value to int, returning default on failure."""
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return default
 
     def validate(self):
         required = [
