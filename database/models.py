@@ -107,6 +107,10 @@ class Submission(Base):
     relation_type = Column(String(20), nullable=True, index=True)  # RelationType.VERSION | RelationType.POSSIBLE_DUP | None
     is_primary = Column(Boolean, default=True, nullable=False, index=True)
 
+    # Multi-assignment group fields
+    group_id = Column(Integer, ForeignKey('submission_groups.id'), nullable=True, index=True)
+    group_order = Column(Integer, default=0, nullable=False)
+
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -116,6 +120,7 @@ class Submission(Base):
 
     # 新增关系
     parent = relationship('Submission', remote_side=[id], backref='children')
+    group = relationship('SubmissionGroup', back_populates='submissions', foreign_keys=[group_id])
 
 class Attachment(Base):
     __tablename__ = 'attachments'
@@ -128,6 +133,47 @@ class Attachment(Base):
     created_at = Column(DateTime, default=datetime.now)
 
     submission = relationship('Submission', back_populates='attachments')
+
+class SubmissionGroup(Base):
+    """Submission group - represents an email that may contain multiple assignment submissions"""
+    __tablename__ = 'submission_groups'
+
+    # Basic fields
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email_uid = Column(String(255), unique=True, nullable=False, index=True)
+    message_id = Column(String(255), index=True)
+
+    # Email information
+    email_subject = Column(Text)
+    sender_email = Column(String(100))
+    sender_name = Column(String(100))
+    submission_time = Column(DateTime, nullable=False)
+
+    # Processing status
+    status = Column(String(20), default='processing', nullable=False)  # processing, completed, failed, manual_review
+    processing_mode = Column(String(20), nullable=False)  # 'single', 'multi'
+
+    # Statistics
+    total_assignments = Column(Integer, default=0)
+    total_attachments = Column(Integer, default=0)
+
+    # Multi-assignment specific fields
+    detection_method = Column(String(50))  # 'subject', 'filename', 'body', 'unknown'
+    ai_confidence = Column(Float)
+
+    # Error information
+    error_message = Column(Text)
+    error_details = Column(Text)  # JSON format
+
+    # Relationships
+    submissions = relationship('Submission', back_populates='group', cascade='all, delete-orphan')
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    def __repr__(self):
+        return f"<SubmissionGroup(id={self.id}, email_uid={self.email_uid}, mode={self.processing_mode})>"
 
 class EmailLog(Base):
     __tablename__ = 'email_log'
