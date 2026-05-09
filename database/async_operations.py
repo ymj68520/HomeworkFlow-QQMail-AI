@@ -5,7 +5,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 from database.models import (
     get_async_session, Base, Student, Assignment, Submission,
-    AIExtractionCache, SubmissionGroup
+    AIExtractionCache, SubmissionGroup, Attachment
 )
 from datetime import datetime
 import asyncio
@@ -649,6 +649,156 @@ class AsyncDatabaseOperations:
             except Exception as e:
                 await session.rollback()
                 logger.error(f"Error saving multi-assignment cache: {e}")
+                return False
+
+    async def get_or_create_student(
+        self,
+        student_id: str,
+        name: str,
+        email: Optional[str] = None
+    ) -> Optional[Student]:
+        """Get or create student record"""
+        async with get_async_session()() as session:
+            try:
+                result = await session.execute(
+                    select(Student).where(Student.student_id == student_id)
+                )
+                student = result.scalar_one_or_none()
+
+                if not student:
+                    student = Student(
+                        student_id=student_id,
+                        name=name,
+                        email=email
+                    )
+                    session.add(student)
+                    await session.commit()
+                    await session.refresh(student)
+
+                return student
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error getting/creating student: {e}")
+                return None
+
+    async def get_or_create_assignment(
+        self,
+        name: str,
+        deadline: Optional[datetime] = None
+    ) -> Optional[Assignment]:
+        """Get or create assignment record"""
+        async with get_async_session()() as session:
+            try:
+                result = await session.execute(
+                    select(Assignment).where(Assignment.name == name)
+                )
+                assignment = result.scalar_one_or_none()
+
+                if not assignment:
+                    assignment = Assignment(
+                        name=name,
+                        deadline=deadline
+                    )
+                    session.add(assignment)
+                    await session.commit()
+                    await session.refresh(assignment)
+
+                return assignment
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error getting/creating assignment: {e}")
+                return None
+
+    async def create_submission(
+        self,
+        group_id: Optional[int] = None,
+        group_order: int = 0,
+        student_id: int = None,
+        assignment_id: int = None,
+        email_uid: str = None,
+        message_id: Optional[str] = None,
+        email_subject: Optional[str] = None,
+        sender_email: Optional[str] = None,
+        sender_name: Optional[str] = None,
+        submission_time: Optional[datetime] = None,
+        local_path: Optional[str] = None,
+        status: str = 'pending',
+        body: Optional[str] = None
+    ) -> Optional[Submission]:
+        """Create a new submission record"""
+        async with get_async_session()() as session:
+            try:
+                submission = Submission(
+                    group_id=group_id,
+                    group_order=group_order,
+                    student_id=student_id,
+                    assignment_id=assignment_id,
+                    email_uid=email_uid,
+                    message_id=message_id,
+                    email_subject=email_subject,
+                    sender_email=sender_email,
+                    sender_name=sender_name,
+                    submission_time=submission_time or datetime.now(),
+                    local_path=local_path,
+                    status=status,
+                    body=body,
+                    is_downloaded=local_path is not None,
+                    is_replied=False
+                )
+                session.add(submission)
+                await session.commit()
+                await session.refresh(submission)
+                return submission
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error creating submission: {e}")
+                return None
+
+    async def update_submission_local_path(
+        self,
+        submission_id: int,
+        local_path: str
+    ) -> bool:
+        """Update submission local path"""
+        async with get_async_session()() as session:
+            try:
+                result = await session.execute(
+                    select(Submission).where(Submission.id == submission_id)
+                )
+                submission = result.scalar_one_or_none()
+                if submission:
+                    submission.local_path = local_path
+                    submission.is_downloaded = True
+                    await session.commit()
+                    return True
+                return False
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error updating submission local path: {e}")
+                return False
+
+    async def add_attachment(
+        self,
+        submission_id: int,
+        filename: str,
+        file_size: int,
+        local_path: str
+    ) -> bool:
+        """Add attachment record"""
+        async with get_async_session()() as session:
+            try:
+                attachment = Attachment(
+                    submission_id=submission_id,
+                    filename=filename,
+                    file_size=file_size,
+                    local_path=local_path
+                )
+                session.add(attachment)
+                await session.commit()
+                return True
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error adding attachment: {e}")
                 return False
 
 
