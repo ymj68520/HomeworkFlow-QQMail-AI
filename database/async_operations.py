@@ -576,6 +576,58 @@ class AsyncDatabaseOperations:
             )
             return result.scalar_one_or_none()
 
+    async def get_multi_assignment_cache(self, cache_key: str) -> Optional[Dict]:
+        """Get multi-assignment detection result from cache"""
+        async with get_async_session()() as session:
+            result = await session.execute(
+                select(AIExtractionCache)
+                .where(AIExtractionCache.email_uid == cache_key)
+            )
+            cache_entry = result.scalar_one_or_none()
+            if cache_entry:
+                return {
+                    'is_multi_assignment': True,
+                    'is_complete': True,
+                    'cached': True
+                }
+            return None
+
+    async def save_multi_assignment_cache(self, cache_key: str, result: Dict) -> bool:
+        """Save multi-assignment detection result to cache"""
+        async with get_async_session()() as session:
+            try:
+                cache_entry = await session.execute(
+                    select(AIExtractionCache)
+                    .where(AIExtractionCache.email_uid == cache_key)
+                )
+                cache_entry = cache_entry.scalar_one_or_none()
+
+                if cache_entry:
+                    # Update existing entry
+                    cache_entry.student_id = result.get('student_id')
+                    cache_entry.name = result.get('name')
+                    cache_entry.assignment_name = result.get('detection_method')
+                    cache_entry.confidence = result.get('overall_confidence', 0.0)
+                    cache_entry.is_fallback = False
+                else:
+                    # Create new entry
+                    cache_entry = AIExtractionCache(
+                        email_uid=cache_key,
+                        student_id=result.get('student_id'),
+                        name=result.get('name'),
+                        assignment_name=result.get('detection_method'),
+                        confidence=result.get('overall_confidence', 0.0),
+                        is_fallback=False
+                    )
+                    session.add(cache_entry)
+
+                await session.commit()
+                return True
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error saving multi-assignment cache: {e}")
+                return False
+
 
 # 全局实例
 async_db = AsyncDatabaseOperations()
