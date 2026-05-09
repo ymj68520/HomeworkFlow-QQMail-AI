@@ -2,9 +2,10 @@
 
 from typing import Optional, Dict, List, Any
 from sqlalchemy import select, update
+from sqlalchemy.orm import selectinload
 from database.models import (
     get_async_session, Base, Student, Assignment, Submission,
-    AIExtractionCache
+    AIExtractionCache, SubmissionGroup
 )
 from datetime import datetime
 import asyncio
@@ -222,7 +223,7 @@ class AsyncDatabaseOperations:
 
             except Exception as e:
                 await session.rollback()
-                print(f"Error creating submission: {e}")
+                logger.error(f"Error creating submission: {e}")
                 return None
 
     async def get_ai_cache(self, email_uid: str) -> Optional[Dict]:
@@ -482,6 +483,98 @@ class AsyncDatabaseOperations:
                 await session.rollback()
                 logger.error(f"Error marking submission {submission_id} as not latest: {e}")
                 return False
+
+    async def create_submission_group(
+        self,
+        email_uid: str,
+        message_id: Optional[str] = None,
+        email_subject: Optional[str] = None,
+        sender_email: Optional[str] = None,
+        sender_name: Optional[str] = None,
+        submission_time: Optional[datetime] = None,
+        processing_mode: str = 'multi',
+        detection_method: Optional[str] = None,
+        ai_confidence: Optional[float] = None,
+        total_assignments: int = 0,
+        total_attachments: int = 0,
+        status: str = 'processing'
+    ) -> Optional[SubmissionGroup]:
+        """Create a new submission group"""
+        async with get_async_session()() as session:
+            try:
+                group = SubmissionGroup(
+                    email_uid=email_uid,
+                    message_id=message_id,
+                    email_subject=email_subject,
+                    sender_email=sender_email,
+                    sender_name=sender_name,
+                    submission_time=submission_time or datetime.now(),
+                    processing_mode=processing_mode,
+                    detection_method=detection_method,
+                    ai_confidence=ai_confidence,
+                    total_assignments=total_assignments,
+                    total_attachments=total_attachments,
+                    status=status
+                )
+                session.add(group)
+                await session.commit()
+                await session.refresh(group)
+                return group
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error creating submission group: {e}")
+                return None
+
+    async def get_submission_group_by_email_uid(self, email_uid: str) -> Optional[SubmissionGroup]:
+        """Get submission group by email UID"""
+        async with get_async_session()() as session:
+            result = await session.execute(
+                select(SubmissionGroup).where(SubmissionGroup.email_uid == email_uid)
+            )
+            return result.scalar_one_or_none()
+
+    async def update_group_status(
+        self,
+        group_id: int,
+        status: str,
+        total_assignments: Optional[int] = None,
+        error_message: Optional[str] = None,
+        error_details: Optional[str] = None
+    ) -> bool:
+        """Update submission group status"""
+        async with get_async_session()() as session:
+            try:
+                result = await session.execute(
+                    select(SubmissionGroup).where(SubmissionGroup.id == group_id)
+                )
+                group = result.scalar_one_or_none()
+                if not group:
+                    return False
+
+                group.status = status
+                if total_assignments is not None:
+                    group.total_assignments = total_assignments
+                if error_message is not None:
+                    group.error_message = error_message
+                if error_details is not None:
+                    group.error_details = error_details
+
+                await session.commit()
+                return True
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error updating group status: {e}")
+                return False
+
+    async def get_group_with_submissions(self, group_id: int) -> Optional[SubmissionGroup]:
+        """Get submission group with all related submissions"""
+        async with get_async_session()() as session:
+            result = await session.execute(
+                select(SubmissionGroup)
+                .options(selectinload(SubmissionGroup.submissions))
+                .where(SubmissionGroup.id == group_id)
+            )
+            return result.scalar_one_or_none()
 
 
 # 全局实例
