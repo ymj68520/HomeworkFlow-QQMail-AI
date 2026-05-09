@@ -194,6 +194,25 @@ class DataTable(QWidget):
 
         # 列标题
         headers = ["学号", "姓名", "作业名称", "提交时间", "状态", "本地路径"]
+
+        # 添加多作业组指示器列标题
+        group_label = QLabel("📎")
+        group_label.setStyleSheet(f"""
+            QLabel {{
+                color: {palette.TEXT_SECONDARY};
+                font-weight: bold;
+                font-size: 14px;
+                padding: 0 4px;
+            }}
+        """)
+        group_label.setToolTip("多作业组指示")
+        header_layout.addWidget(group_label)
+
+        # 添加分隔符
+        separator = QLabel("|")
+        separator.setStyleSheet(f"color: {palette.TEXT_SECONDARY};")
+        header_layout.addWidget(separator)
+
         for header_text in headers:
             label = QLabel(header_text)
             label.setStyleSheet(f"""

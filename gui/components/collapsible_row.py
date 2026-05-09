@@ -76,16 +76,25 @@ class CollapsibleRow(QWidget):
         # 根据子记录类型设置边框颜色
         border_color = self._get_border_color(version_count, possible_dup_count)
 
+        # 检查是否是多作业组以设置特殊背景
+        group_total = self.data.get('group_total', 1)
+        group_id = self.data.get('group_id')
+        is_multi_group = group_total > 1 and group_id is not None
+
+        # 为多作业组使用特殊的背景色
+        bg_color = 'rgba(156, 39, 176, 0.05)' if is_multi_group else palette.SURFACE
+        hover_bg_color = 'rgba(156, 39, 176, 0.1)' if is_multi_group else palette.BACKGROUND
+
         frame.setStyleSheet(f"""
             QFrame {{
-                background-color: {palette.SURFACE};
+                background-color: {bg_color};
                 border: 1px solid {border_color};
                 border-left: 4px solid {border_color};
                 border-radius: 8px;
                 padding: 8px;
             }}
             QFrame:hover {{
-                background-color: {palette.BACKGROUND};
+                background-color: {hover_bg_color};
             }}
         """)
 
@@ -104,6 +113,12 @@ class CollapsibleRow(QWidget):
         """)
         layout.addWidget(self.checkbox)
         self.checkbox.stateChanged.connect(lambda state: self.checkboxChanged.emit(state == 2))
+
+        # 多作业组指示器
+        group_indicator = self._create_group_indicator()
+        if group_indicator:
+            layout.addWidget(group_indicator)
+            layout.addWidget(self._create_separator())
 
         # 学号
         layout.addWidget(QLabel(self._format_field('student_id')))
@@ -155,6 +170,35 @@ class CollapsibleRow(QWidget):
         separator = QLabel("|")
         separator.setStyleSheet(f"color: {palette.TEXT_SECONDARY};")
         return separator
+
+    def _create_group_indicator(self) -> QLabel:
+        """
+        创建多作业组指示器
+
+        Returns:
+            指示器标签，如果不是多作业组则返回None
+        """
+        # 获取group_total信息
+        group_total = self.data.get('group_total', 1)
+        group_id = self.data.get('group_id')
+
+        # 只有当group_total > 1时才显示指示器
+        if group_total > 1 and group_id is not None:
+            indicator = QLabel(f"📎({group_total})")
+            indicator.setStyleSheet(f"""
+                QLabel {{
+                    color: {palette.PRIMARY};
+                    font-size: 14px;
+                    font-weight: bold;
+                    padding: 2px 6px;
+                    background-color: rgba(34, 139, 230, 0.1);
+                    border-radius: 4px;
+                }}
+            """)
+            indicator.setToolTip(f"此邮件包含 {group_total} 个作业提交")
+            return indicator
+
+        return None
 
     def _format_field(self, field: str) -> str:
         """
@@ -241,7 +285,14 @@ class CollapsibleRow(QWidget):
         Returns:
             边框颜色十六进制值
         """
-        if possible_dup_count > 0:
+        # 检查是否是多作业组
+        group_total = self.data.get('group_total', 1)
+        group_id = self.data.get('group_id')
+
+        # 多作业组使用紫色边框
+        if group_total > 1 and group_id is not None:
+            return '#9C27B0'  # 紫色
+        elif possible_dup_count > 0:
             # 橙色 - 有可能重复的记录
             return '#FD7E14'
         elif version_count > 0:

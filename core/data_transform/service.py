@@ -113,6 +113,15 @@ class DataTransformService:
                 'children': formatted_children
             })
 
+        # 为所有记录添加多作业组信息
+        # 提取所有primary_submission进行group info enrichment
+        all_primaries = [r.get('primary_submission', {}) for r in primary_with_children]
+        enriched_primaries = DataTransformService.enrich_with_group_info(all_primaries)
+
+        # 更新primary_with_children中的primary_submission
+        for i, record in enumerate(primary_with_children):
+            record['primary_submission'] = enriched_primaries[i]
+
         # 如果需要按作业分组
         if group_by_assignment:
             return DataTransformService._group_by_assignment(primary_with_children)
@@ -252,6 +261,8 @@ class DataTransformService:
             if record.relation_type
             else None,
             'is_primary': record.is_primary,
+            'group_id': record.group_id,
+            'group_order': record.group_order,
         }
 
         # 处理嵌套的学生数据
@@ -284,3 +295,36 @@ class DataTransformService:
             result['attachments'] = getattr(record, 'attachments', [])
 
         return result
+
+    @staticmethod
+    def enrich_with_group_info(
+        records: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        为记录添加多作业组信息（组内总数量）
+
+        Args:
+            records: 记录列表
+
+        Returns:
+            添加了组信息的记录列表
+        """
+        # 统计每个group_id的记录数
+        group_counts = {}
+        for record in records:
+            group_id = record.get('group_id')
+            if group_id is not None:
+                group_counts[group_id] = group_counts.get(group_id, 0) + 1
+
+        # 为每条记录添加group_total
+        enriched_records = []
+        for record in records:
+            enriched_record = record.copy()
+            group_id = record.get('group_id')
+            if group_id is not None:
+                enriched_record['group_total'] = group_counts.get(group_id, 1)
+            else:
+                enriched_record['group_total'] = 1
+            enriched_records.append(enriched_record)
+
+        return enriched_records
