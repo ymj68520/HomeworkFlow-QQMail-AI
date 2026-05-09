@@ -109,6 +109,50 @@ class SMTPClient:
 
         return body
 
+    def send_custom_reply(
+        self,
+        to_email: str,
+        subject: str,
+        body: str
+    ) -> bool:
+        """
+        发送自定义回复邮件
+
+        Args:
+            to_email: 收件人邮箱地址
+            subject: 邮件主题
+            body: 邮件正文内容
+
+        Returns:
+            发送成功返回True，失败返回False
+        """
+        if not settings.ENABLE_REPLY:
+            print("DEBUG: SMTPClient.send_custom_reply called but feature is disabled in settings.")
+            return False
+
+        try:
+            if not self.connection:
+                if not self.connect():
+                    return False
+
+            # 创建邮件
+            msg = MIMEMultipart()
+            msg['From'] = formataddr(("助教", self.email))
+            msg['To'] = to_email
+            msg['Subject'] = subject
+
+            # 添加正文
+            msg.attach(MIMEText(body, 'plain', 'utf-8'))
+
+            # 发送邮件
+            self.connection.send_message(msg)
+            print(f"已发送自定义回复至 {to_email}: {subject}")
+            return True
+
+        except Exception as e:
+            print(f"发送自定义回复失败: {e}")
+            return False
+
     def send_batch_replies(
         self,
         recipients: list,
