@@ -709,7 +709,7 @@ class AsyncDatabaseOperations:
                 logger.error(f"Error getting/creating assignment: {e}")
                 return None
 
-    async def create_submission(
+    async def create_submission_record(
         self,
         group_id: Optional[int] = None,
         group_order: int = 0,
@@ -725,7 +725,32 @@ class AsyncDatabaseOperations:
         status: str = 'pending',
         body: Optional[str] = None
     ) -> Optional[Submission]:
-        """Create a new submission record"""
+        """Create a new submission record with direct database IDs
+
+        This is a simplified method that creates a Submission record using
+        direct database IDs (student_id, assignment_id) rather than looking
+        them up by student_id string or assignment name. This is useful when
+        you already have the database IDs and don't need auto-creation or
+        duplicate detection.
+
+        Args:
+            group_id: Optional submission group ID
+            group_order: Order within the group
+            student_id: Database ID of the student (integer)
+            assignment_id: Database ID of the assignment (integer)
+            email_uid: Email UID
+            message_id: Optional message ID
+            email_subject: Optional email subject
+            sender_email: Optional sender email
+            sender_name: Optional sender name
+            submission_time: Optional submission time
+            local_path: Optional local file path
+            status: Processing status
+            body: Optional email body
+
+        Returns:
+            Created Submission object or None on failure
+        """
         async with get_async_session()() as session:
             try:
                 submission = Submission(
@@ -751,7 +776,7 @@ class AsyncDatabaseOperations:
                 return submission
             except Exception as e:
                 await session.rollback()
-                logger.error(f"Error creating submission: {e}")
+                logger.error(f"Error creating submission record: {e}")
                 return None
 
     async def update_submission_local_path(
