@@ -17,6 +17,7 @@ ENV/
 *.db-wal
 *.sqlite
 *.sqlite3
+*.backup
 
 # IDE
 .vscode/
