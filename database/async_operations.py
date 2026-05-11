@@ -5,11 +5,12 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 from database.models import (
     get_async_session, Base, Student, Assignment, Submission,
-    AIExtractionCache, SubmissionGroup, Attachment
+    AIExtractionCache, SubmissionGroup, Attachment, AttachmentValidationRule
 )
 from datetime import datetime
 import asyncio
 import logging
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -824,6 +825,46 @@ class AsyncDatabaseOperations:
             except Exception as e:
                 await session.rollback()
                 logger.error(f"Error adding attachment: {e}")
+                return False
+
+    async def get_active_attachment_rule(self) -> Optional[AttachmentValidationRule]:
+        """Get the currently active attachment validation rule"""
+        async with get_async_session()() as session:
+            result = await session.execute(
+                select(AttachmentValidationRule)
+                .where(AttachmentValidationRule.is_active == True)
+                .order_by(AttachmentValidationRule.updated_at.desc())
+            )
+            return result.scalar_one_or_none()
+
+    async def update_attachment_rule(
+        self,
+        rule_name: str,
+        allowed_extensions: List[str],
+        max_file_size_mb: float,
+        max_total_size_mb: float
+    ) -> bool:
+        """Update an existing attachment validation rule"""
+        async with get_async_session()() as session:
+            try:
+                result = await session.execute(
+                    select(AttachmentValidationRule)
+                    .where(AttachmentValidationRule.rule_name == rule_name)
+                )
+                rule = result.scalar_one_or_none()
+
+                if not rule:
+                    return False
+
+                rule.allowed_extensions = json.dumps(allowed_extensions)
+                rule.max_file_size_mb = max_file_size_mb
+                rule.max_total_size_mb = max_total_size_mb
+
+                await session.commit()
+                return True
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"[AsyncDB] Error updating attachment rule: {e}")
                 return False
 
 

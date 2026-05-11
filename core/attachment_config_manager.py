@@ -1,6 +1,7 @@
 # core/attachment_config_manager.py
 import yaml
 import json
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 from database.models import AttachmentValidationRule
@@ -151,3 +152,68 @@ class AttachmentConfigManager:
             result['is_valid'] = False
 
         return result
+
+    async def get_current_rules(self) -> Optional[AttachmentValidationRule]:
+        """
+        Get currently active rules (with caching)
+
+        Returns:
+            AttachmentValidationRule or None
+        """
+        # Reload if cache is older than 1 minute
+        if self._rules_cache is None or self._should_reload_rules():
+            await self._reload_rules()
+
+        return self._rules_cache
+
+    async def update_rules(
+        self,
+        allowed_extensions: List[str],
+        max_file_size_mb: float,
+        max_total_size_mb: float
+    ) -> bool:
+        """
+        Update rules (takes effect immediately)
+
+        Args:
+            allowed_extensions: List of allowed file extensions (e.g. ['.pdf', '.doc'])
+            max_file_size_mb: Maximum single file size in MB
+            max_total_size_mb: Maximum total attachments size in MB
+
+        Returns:
+            True if successful, False otherwise
+        """
+        db = AsyncDatabaseOperations()
+        success = await db.update_attachment_rule(
+            rule_name='default',
+            allowed_extensions=allowed_extensions,
+            max_file_size_mb=max_file_size_mb,
+            max_total_size_mb=max_total_size_mb
+        )
+
+        if success:
+            # Clear cache to force reload
+            self._rules_cache = None
+            print(f"[AttachmentConfig] Rules updated successfully")
+        else:
+            print(f"[AttachmentConfig] Failed to update rules")
+
+        return success
+
+    def _should_reload_rules(self) -> bool:
+        """Check if rules cache should be reloaded"""
+        if self._rules_cache_time is None:
+            return True
+
+        return (time.time() - self._rules_cache_time) > 60  # 1 minute cache
+
+    async def _reload_rules(self):
+        """Reload rules from database"""
+        db = AsyncDatabaseOperations()
+        self._rules_cache = await db.get_active_attachment_rule()
+        self._rules_cache_time = time.time()
+
+        if self._rules_cache:
+            print(f"[AttachmentConfig] Rules loaded from database: {self._rules_cache.rule_name}")
+        else:
+            print(f"[AttachmentConfig] Warning: No active rules found in database")
