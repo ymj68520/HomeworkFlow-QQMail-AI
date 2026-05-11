@@ -14,7 +14,9 @@ from core.deduplication.service import DeduplicationService
 from core.transactions.file_operations import TransactionalFileOperation
 from core.async_status_manager import get_async_status_manager
 from config.settings import settings
-from database.models import SubmissionStatus, Submission, ProcessingStatus, AIExtractionStatus, DownloadStatus, ReplyStatus
+from database.models import SubmissionStatus, Submission, ProcessingStatus, AIExtractionStatus, DownloadStatus, ReplyStatus, get_async_session, AsyncSessionLocal
+from core.attachment_validator import AttachmentValidator
+from core.attachment_config_manager import AttachmentConfigManager
 
 # 数据变更通知器
 def _get_notifier():
@@ -65,12 +67,15 @@ class AssignmentWorkflow:
         self.status_mgr = None  # 延迟初始化
         # 新增：监控暂停标志
         self._monitoring_paused = False
+        # 新增：附件验证
+        self.attachment_config_mgr = AttachmentConfigManager()
+        self.attachment_validator = AttachmentValidator(self.attachment_config_mgr)
 
     def _get_status_manager(self):
-        """获取或创建状态管理器实例"""
-        if self.status_mgr is None:
-            self.status_mgr = get_async_status_manager(self.async_db)
-        return self.status_mgr
+        """获取状态管理器实例 - 每次创建新会话以避免锁问题"""
+        # Create a new AsyncSession for each call to avoid SQLite lock issues
+        session = AsyncSessionLocal()
+        return get_async_status_manager(session)
 
     async def process_new_email(self, email_uid: str) -> dict:
         """
@@ -105,6 +110,29 @@ class AssignmentWorkflow:
                     details='No attachments'
                 )
                 return {'success': True, 'action': 'marked_read', 'reason': 'no_attachments'}
+
+            # 2.5. NEW: 验证附件规则
+            print("Validating attachment rules...")
+            validation_result = await self.attachment_validator.validate_attachments(
+                email_data['attachments']
+            )
+
+            if not validation_result.is_valid:
+                print(f"Attachment validation failed: {validation_result.reason}")
+                # Keep email unread, log rejection, don't process further
+                self.db.log_email_action(
+                    email_uid=email_uid,
+                    action='attachment_rejected',
+                    folder='INBOX',
+                    details=validation_result.reason
+                )
+                return {
+                    'success': False,
+                    'action': 'rejected',
+                    'reason': validation_result.reason
+                }
+
+            print("Attachment validation passed")
 
             # 3. 多作业检测 (NEW)
             print("Checking for multi-assignment submission...")
@@ -303,81 +331,84 @@ class AssignmentWorkflow:
 
         # 新增：使用状态管理器更新状态
         status_mgr = self._get_status_manager()
+        try:
+            if local_path:
+                # 下载成功
+                await status_mgr.transition(
+                    submission.id, 'download', DownloadStatus.SUCCESS,
+                    reason='附件下载成功',
+                    metadata={'local_path': local_path}
+                )
+                await status_mgr.transition(
+                    submission.id, 'processing', ProcessingStatus.DOWNLOADED,
+                    reason='附件下载完成'
+                )
+            else:
+                # 下载失败
+                await status_mgr.transition(
+                    submission.id, 'download', DownloadStatus.FAILED,
+                    reason='附件下载失败'
+                )
+                await status_mgr.transition(
+                    submission.id, 'processing', ProcessingStatus.FAILED,
+                    reason='附件下载失败'
+                )
 
-        if local_path:
-            # 下载成功
-            await status_mgr.transition(
-                submission.id, 'download', DownloadStatus.SUCCESS,
-                reason='附件下载成功',
-                metadata={'local_path': local_path}
-            )
-            await status_mgr.transition(
-                submission.id, 'processing', ProcessingStatus.DOWNLOADED,
-                reason='附件下载完成'
-            )
-        else:
-            # 下载失败
-            await status_mgr.transition(
-                submission.id, 'download', DownloadStatus.FAILED,
-                reason='附件下载失败'
-            )
-            await status_mgr.transition(
-                submission.id, 'processing', ProcessingStatus.FAILED,
-                reason='附件下载失败'
-            )
+            # 4. 添加附件记录
+            for attachment in email_data['attachments']:
+                self.db.add_attachment(
+                    submission_id=submission.id,
+                    filename=attachment['filename'],
+                    file_size=attachment['size'],
+                    local_path=f"{local_path}/{attachment['filename']}"
+                )
 
-        # 4. 添加附件记录
-        for attachment in email_data['attachments']:
-            self.db.add_attachment(
-                submission_id=submission.id,
-                filename=attachment['filename'],
-                file_size=attachment['size'],
-                local_path=f"{local_path}/{attachment['filename']}"
-            )
+            # 5. 移动邮件到目标文件夹
+            print(f"Moving email to {self.settings.TARGET_FOLDER}...")
+            if not self.imap.folder_exists(self.settings.TARGET_FOLDER):
+                print(f"Creating target folder: {self.settings.TARGET_FOLDER}")
+                self.imap.create_folder(self.settings.TARGET_FOLDER)
 
-        # 5. 移动邮件到目标文件夹
-        print(f"Moving email to {self.settings.TARGET_FOLDER}...")
-        if not self.imap.folder_exists(self.settings.TARGET_FOLDER):
-            print(f"Creating target folder: {self.settings.TARGET_FOLDER}")
-            self.imap.create_folder(self.settings.TARGET_FOLDER)
+            move_success = self.parser.move_to_folder(email_uid, self.settings.TARGET_FOLDER)
 
-        move_success = self.parser.move_to_folder(email_uid, self.settings.TARGET_FOLDER)
+            if not move_success:
+                print(f"Warning: Failed to move email to {self.settings.TARGET_FOLDER}")
 
-        if not move_success:
-            print(f"Warning: Failed to move email to {self.settings.TARGET_FOLDER}")
+            # 6. 发送确认邮件
+            reply_sent = False
+            if self.settings.ENABLE_REPLY:
+                print("Sending confirmation email...")
+                await status_mgr.transition(
+                    submission.id, 'reply', ReplyStatus.SENDING,
+                    reason='开始发送回复邮件'
+                )
+                reply_sent = self.smtp.send_reply(
+                    to_email=email_data['sender_email'],
+                    student_name=student_name,
+                    assignment_name=assignment_name
+                )
+            else:
+                print("INFO: 邮件回复功能已禁用，跳过发送步骤。")
+                await status_mgr.transition(
+                    submission.id, 'reply', ReplyStatus.SKIPPED,
+                    reason='回复功能未启用'
+                )
 
-        # 6. 发送确认邮件
-        reply_sent = False
-        if self.settings.ENABLE_REPLY:
-            print("Sending confirmation email...")
-            await status_mgr.transition(
-                submission.id, 'reply', ReplyStatus.SENDING,
-                reason='开始发送回复邮件'
-            )
-            reply_sent = self.smtp.send_reply(
-                to_email=email_data['sender_email'],
-                student_name=student_name,
-                assignment_name=assignment_name
-            )
-        else:
-            print("INFO: 邮件回复功能已禁用，跳过发送步骤。")
-            await status_mgr.transition(
-                submission.id, 'reply', ReplyStatus.SKIPPED,
-                reason='回复功能未启用'
-            )
-
-        # 7. 标记已回复
-        if reply_sent:
-            self.db.mark_replied(submission.id)
-            # 使用新的状态管理器
-            await status_mgr.transition(
-                submission.id, 'reply', ReplyStatus.SUCCESS,
-                reason='回复邮件发送成功'
-            )
-            await status_mgr.transition(
-                submission.id, 'processing', ProcessingStatus.REPLIED,
-                reason='处理完成'
-            )
+            # 7. 标记已回复
+            if reply_sent:
+                self.db.mark_replied(submission.id)
+                # 使用新的状态管理器
+                await status_mgr.transition(
+                    submission.id, 'reply', ReplyStatus.SUCCESS,
+                    reason='回复邮件发送成功'
+                )
+                await status_mgr.transition(
+                    submission.id, 'processing', ProcessingStatus.REPLIED,
+                    reason='处理完成'
+                )
+        finally:
+            # 确保关闭数据库会话
+            await status_mgr.close()
 
         # 8. 记录日志
         log_action = 'reprocessed' if is_retry else 'processed'
@@ -458,50 +489,53 @@ class AssignmentWorkflow:
 
             # 新增：使用状态管理器
             status_mgr = self._get_status_manager()
-            await status_mgr.transition(
-                submission.id, 'processing', ProcessingStatus.DOWNLOADED,
-                reason='重复提交版本创建成功'
-            )
-
-            if not submission:
-                return {'success': False, 'error': 'Failed to create submission', 'action': 'duplicate_failed'}
-
-            # 2. 使用事务性文件操作保存附件
-            file_op = TransactionalFileOperation(submission.id)
             try:
-                local_path = self.storage.store_submission(
-                    assignment_name=assignment_name,
-                    student_id=student_id,
-                    name=student_name,
-                    attachments=email_data['attachments']
-                )
-                
-                # 更新本地路径到数据库
-                self.db.update_submission_local_path(submission.id, local_path)
-
-                # 3. 标记旧版本
-                await self.dedup_service.version_manager.mark_old_versions(
-                    student_id, assignment_name, new_version
+                await status_mgr.transition(
+                    submission.id, 'processing', ProcessingStatus.DOWNLOADED,
+                    reason='重复提交版本创建成功'
                 )
 
-                # 4. 移动邮件
-                self.parser.move_to_folder(email_uid, self.settings.TARGET_FOLDER)
+                if not submission:
+                    return {'success': False, 'error': 'Failed to create submission', 'action': 'duplicate_failed'}
 
-                # 5. 发送更新通知
-                if self.settings.ENABLE_REPLY:
-                    self.smtp.send_reply(
-                        to_email=email_data['sender_email'],
-                        student_name=student_name,
+                # 2. 使用事务性文件操作保存附件
+                file_op = TransactionalFileOperation(submission.id)
+                try:
+                    local_path = self.storage.store_submission(
                         assignment_name=assignment_name,
-                        custom_message="你的作业已更新为最新版本。"
+                        student_id=student_id,
+                        name=student_name,
+                        attachments=email_data['attachments']
                     )
 
-                await file_op.cleanup()
-                return {'success': True, 'action': 'updated_duplicate', 'version': new_version}
+                    # 更新本地路径到数据库
+                    self.db.update_submission_local_path(submission.id, local_path)
 
-            except Exception as e:
-                await file_op._rollback()
-                raise e
+                    # 3. 标记旧版本
+                    await self.dedup_service.version_manager.mark_old_versions(
+                        student_id, assignment_name, new_version
+                    )
+
+                    # 4. 移动邮件
+                    self.parser.move_to_folder(email_uid, self.settings.TARGET_FOLDER)
+
+                    # 5. 发送更新通知
+                    if self.settings.ENABLE_REPLY:
+                        self.smtp.send_reply(
+                            to_email=email_data['sender_email'],
+                            student_name=student_name,
+                            assignment_name=assignment_name,
+                            custom_message="你的作业已更新为最新版本。"
+                        )
+
+                    await file_op.cleanup()
+                    return {'success': True, 'action': 'updated_duplicate', 'version': new_version}
+
+                except Exception as e:
+                    await file_op._rollback()
+                    raise e
+            finally:
+                await status_mgr.close()
 
         except Exception as e:
             print(f"Error handling duplicate: {e}")
