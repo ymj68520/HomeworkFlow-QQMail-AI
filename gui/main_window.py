@@ -31,6 +31,8 @@ from core.data_change_notifier import data_change_notifier, ChangeType
 from core.filter_manager import filter_manager
 from gui.components.filter_indicator import FilterIndicator
 from core.filter_options_registry import filter_options_registry
+from gui.attachment_config_dialog import AttachmentConfigDialog
+from core.attachment_config_manager import AttachmentConfigManager
 
 class MainWindow(QMainWindow):
     """主窗口 - PySide6 实现"""
@@ -154,6 +156,13 @@ class MainWindow(QMainWindow):
 
         # 状态栏
         self.statusBar().showMessage("准备就绪")
+
+        # Add Settings menu
+        menubar = self.menuBar()
+        settings_menu = menubar.addMenu("设置")
+
+        config_action = settings_menu.addAction("附件验证规则")
+        config_action.triggered.connect(self.show_attachment_config)
 
     def setup_connections(self):
         """绑定信号与槽"""
@@ -2033,6 +2042,18 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
             QMessageBox.critical(self, "错误", f"刷新筛选选项失败: {str(e)}")
             self.statusBar().showMessage("刷新失败")
+
+    def show_attachment_config(self):
+        """Show attachment configuration dialog"""
+        config_mgr = AttachmentConfigManager()
+        dialog = AttachmentConfigDialog(config_mgr)
+        dialog.config_updated.connect(self.on_attachment_config_updated)
+        dialog.show()
+
+    def on_attachment_config_updated(self):
+        """Handle attachment config update"""
+        # Reload data or show notification
+        self.statusBar().showMessage("附件验证规则已更新", 3000)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
