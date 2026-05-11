@@ -186,6 +186,23 @@ class EmailLog(Base):
     details = Column(Text)
     error_message = Column(Text)
 
+class AttachmentValidationRule(Base):
+    """Attachment validation rules - configurable file type and size restrictions"""
+    __tablename__ = 'attachment_validation_rules'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rule_name = Column(String(50), unique=True, nullable=False, index=True)
+    allowed_extensions = Column(Text, nullable=False)  # JSON: [".pdf", ".doc", ...]
+    extension_categories = Column(Text)  # JSON: {"document": [".pdf", ...]}
+    max_file_size_mb = Column(Float, nullable=False)
+    max_total_size_mb = Column(Float, nullable=False)
+    is_active = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    def __repr__(self):
+        return f"<AttachmentValidationRule(id={self.id}, name='{self.rule_name}', active={self.is_active})>"
+
 class AIExtractionCache(Base):
     """AI extraction cache table - supports both single and multi-assignment caching"""
     __tablename__ = 'ai_extraction_cache'
