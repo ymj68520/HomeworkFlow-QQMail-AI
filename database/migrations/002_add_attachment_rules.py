@@ -6,7 +6,7 @@ Create Date: 2026-05-11
 """
 import json
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, Float
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, Float, text
 from sqlalchemy.ext.declarative import declarative_base
 import os
 from pathlib import Path
@@ -68,7 +68,7 @@ def downgrade():
     """Drop attachment_validation_rules table"""
     engine = create_engine(f'sqlite:///{DATABASE_PATH}')
     with engine.connect() as conn:
-        conn.execute("DROP TABLE IF EXISTS attachment_validation_rules")
+        conn.execute(text("DROP TABLE IF EXISTS attachment_validation_rules"))
     print("[Migration] Dropped attachment_validation_rules table")
 
 if __name__ == '__main__':
