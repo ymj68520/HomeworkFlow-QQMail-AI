@@ -33,7 +33,7 @@ class AttachmentValidationRule(Base):
 def upgrade():
     """Create attachment_validation_rules table and insert default rule"""
     engine = create_engine(f'sqlite:///{DATABASE_PATH}')
-    Base.metadata.create_all(engine)
+    AttachmentValidationRule.__table__.create(engine, checkfirst=True)
 
     from sqlalchemy.orm import sessionmaker
     Session = sessionmaker(bind=engine)
