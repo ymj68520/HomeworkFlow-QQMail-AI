@@ -1,5 +1,6 @@
 """筛选模式指示器组件 - 显示在表格上方"""
 
+from typing import Dict
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QLabel, QPushButton,
     QFrame
