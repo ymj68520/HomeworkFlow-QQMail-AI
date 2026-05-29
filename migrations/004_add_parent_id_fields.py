@@ -34,12 +34,30 @@ def migrate() -> bool:
             trans = conn.begin()
 
             try:
-                # 添加新字段
-                conn.execute(text("ALTER TABLE submissions ADD COLUMN parent_id INTEGER REFERENCES submissions(id)"))
-                conn.execute(text("ALTER TABLE submissions ADD COLUMN relation_type TEXT"))
-                conn.execute(text("ALTER TABLE submissions ADD COLUMN is_primary BOOLEAN DEFAULT 1"))
+                # 检查现有字段
+                result = conn.execute(text("PRAGMA table_info(submissions)"))
+                existing_columns = [row[1] for row in result.fetchall()]
 
-                # 创建索引
+                # 添加新字段（如果不存在）
+                if 'parent_id' not in existing_columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN parent_id INTEGER REFERENCES submissions(id)"))
+                    print("[OK] Added column 'parent_id'")
+                else:
+                    print("[INFO] Column 'parent_id' already exists, skipping")
+
+                if 'relation_type' not in existing_columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN relation_type TEXT"))
+                    print("[OK] Added column 'relation_type'")
+                else:
+                    print("[INFO] Column 'relation_type' already exists, skipping")
+
+                if 'is_primary' not in existing_columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN is_primary BOOLEAN DEFAULT 1"))
+                    print("[OK] Added column 'is_primary'")
+                else:
+                    print("[INFO] Column 'is_primary' already exists, skipping")
+
+                # 创建索引（如果不存在）
                 conn.execute(text("CREATE INDEX IF NOT EXISTS idx_submissions_parent ON submissions(parent_id)"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS idx_submissions_relation ON submissions(relation_type)"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS idx_submissions_primary ON submissions(is_primary)"))
@@ -47,7 +65,7 @@ def migrate() -> bool:
 
                 trans.commit()
                 print("[OK] Migration completed successfully")
-                print("  - Added fields: parent_id, relation_type, is_primary")
+                print("  - Added fields: parent_id, relation_type, is_primary (if not exist)")
                 print("  - Created indexes: idx_submissions_parent, idx_submissions_relation, idx_submissions_primary, idx_submissions_student_assignment")
 
             except Exception as e:

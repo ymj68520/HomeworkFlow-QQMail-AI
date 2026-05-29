@@ -38,17 +38,27 @@ def main():
         import asyncio
         from database.models import enable_wal_mode
         from database.async_operations import async_db
+        from database.schema import init_database
 
         async def init_db():
+            # Step 1: 确保数据库表结构存在（新电脑冷启动会创建所有表并应用迁移）
+            init_database()
+
+            # Step 2: 启用WAL模式以提升并发性能
             await enable_wal_mode()
-            # 初始化后台缓存写入器
+
+            # Step 3: 初始化后台缓存写入器
             await async_db.initialize()
 
         asyncio.run(init_db())
+        print("✓ 数据库初始化完成（表结构+迁移）")
         print("✓ 数据库WAL模式已启用")
         print("✓ 异步数据库操作已初始化")
     except Exception as e:
-        print(f"⚠ 数据库初始化警告: {e}")
+        print(f"✗ 数据库初始化失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return
 
     # 启动GUI
     try:

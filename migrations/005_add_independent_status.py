@@ -99,17 +99,49 @@ def migrate() -> bool:
                 conn.execute(text("CREATE INDEX IF NOT EXISTS idx_status_history_created ON status_history(created_at)"))
 
                 print("[STEP 2] Adding new status columns to submissions table...")
-                # 添加独立状态字段
-                conn.execute(text("ALTER TABLE submissions ADD COLUMN processing_status TEXT DEFAULT 'received'"))
-                conn.execute(text("ALTER TABLE submissions ADD COLUMN ai_status TEXT DEFAULT 'pending'"))
-                conn.execute(text("ALTER TABLE submissions ADD COLUMN download_status TEXT DEFAULT 'pending'"))
-                conn.execute(text("ALTER TABLE submissions ADD COLUMN reply_status TEXT DEFAULT 'pending'"))
+                # 检查现有字段
+                result = conn.execute(text("PRAGMA table_info(submissions)"))
+                existing_columns = [row[1] for row in result.fetchall()]
 
-                # 添加状态更新时间戳
-                conn.execute(text("ALTER TABLE submissions ADD COLUMN processing_status_updated_at TIMESTAMP"))
-                conn.execute(text("ALTER TABLE submissions ADD COLUMN ai_status_updated_at TIMESTAMP"))
-                conn.execute(text("ALTER TABLE submissions ADD COLUMN download_status_updated_at TIMESTAMP"))
-                conn.execute(text("ALTER TABLE submissions ADD COLUMN reply_status_updated_at TIMESTAMP"))
+                # 添加独立状态字段（如果不存在）
+                columns_added = []
+
+                if 'processing_status' not in existing_columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN processing_status TEXT DEFAULT 'received'"))
+                    columns_added.append('processing_status')
+
+                if 'ai_status' not in existing_columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN ai_status TEXT DEFAULT 'pending'"))
+                    columns_added.append('ai_status')
+
+                if 'download_status' not in existing_columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN download_status TEXT DEFAULT 'pending'"))
+                    columns_added.append('download_status')
+
+                if 'reply_status' not in existing_columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN reply_status TEXT DEFAULT 'pending'"))
+                    columns_added.append('reply_status')
+
+                if 'processing_status_updated_at' not in existing_columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN processing_status_updated_at TIMESTAMP"))
+                    columns_added.append('processing_status_updated_at')
+
+                if 'ai_status_updated_at' not in existing_columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN ai_status_updated_at TIMESTAMP"))
+                    columns_added.append('ai_status_updated_at')
+
+                if 'download_status_updated_at' not in existing_columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN download_status_updated_at TIMESTAMP"))
+                    columns_added.append('download_status_updated_at')
+
+                if 'reply_status_updated_at' not in existing_columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN reply_status_updated_at TIMESTAMP"))
+                    columns_added.append('reply_status_updated_at')
+
+                if columns_added:
+                    print(f"[OK] Added {len(columns_added)} new columns: {', '.join(columns_added)}")
+                else:
+                    print("[INFO] All status columns already exist, skipping column creation")
 
                 print("[STEP 3] Migrating existing data...")
                 # 查询所有现有记录
