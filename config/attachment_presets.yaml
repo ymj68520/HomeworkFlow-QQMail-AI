@@ -1,9 +1,7 @@
-# config/attachment_presets.yaml
 # Attachment validation preset categories configuration
 # Users can modify these presets to customize allowed file types
 
 categories:
-  # Document types
   document:
     display_name: "文档类型"
     extensions:
@@ -15,12 +13,7 @@ categories:
       - .ppt
       - .pptx
       - .txt
-      - .rtf
-      - .odt
-      - .ods
-      - .odp
 
-  # Image types
   image:
     display_name: "图片类型"
     extensions:
@@ -30,11 +23,7 @@ categories:
       - .gif
       - .bmp
       - .webp
-      - .svg
-      - .ico
-      - .tiff
 
-  # Archive files
   archive:
     display_name: "压缩文件"
     extensions:
@@ -43,31 +32,12 @@ categories:
       - .7z
       - .tar
       - .gz
-      - .bz2
-      - .xz
 
-  # Code files (optional)
-  code:
-    display_name: "代码文件"
-    extensions:
-      - .py
-      - .java
-      - .cpp
-      - .c
-      - .h
-      - .js
-      - .html
-      - .css
-      - .json
-      - .xml
-
-# Default enabled categories (for initialization)
 default_enabled_categories:
   - document
   - image
   - archive
 
-# Default size limits
 default_size_limits:
   max_file_size_mb: 25
   max_total_size_mb: 100

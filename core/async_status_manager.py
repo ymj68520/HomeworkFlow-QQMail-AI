@@ -14,6 +14,13 @@ class AsyncStatusManager(BaseStatusManager):
     def __init__(self, db_session: AsyncSession):
         super().__init__(db_session)
 
+    async def close(self):
+        """关闭数据库会话"""
+        try:
+            await self.db.close()
+        except Exception as e:
+            print(f"[StatusManager] Error closing session: {e}")
+
     async def transition(
         self,
         submission_id: int,

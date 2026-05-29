@@ -48,8 +48,6 @@ memory/
 
 # Submissions & Storage
 submissions/*
-storage/*
-storage/*
 !submissions/.gitkeep
 !storage/__init__.py
 

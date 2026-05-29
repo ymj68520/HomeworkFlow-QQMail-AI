@@ -172,6 +172,21 @@ class AssignmentWorkflow:
                 print(f"  name={student_info.get('name')}")
                 print(f"  assignment={student_info.get('assignment_name')}")
 
+                # If name is missing but student_id exists, look up from database
+                if student_info.get('student_id') and not student_info.get('name'):
+                    try:
+                        import sqlite3
+                        conn = sqlite3.connect('assignment_submissions.db')
+                        cur = conn.cursor()
+                        cur.execute("SELECT name FROM students WHERE student_id = ?", (student_info['student_id'],))
+                        row = cur.fetchone()
+                        conn.close()
+                        if row:
+                            student_info['name'] = row[0]
+                            print(f"  Resolved name from DB: {row[0]}")
+                    except Exception as e:
+                        print(f"  Warning: Failed to lookup student name: {e}")
+
                 # NEW: Check for Unknown fields and add to pending retry
                 has_unknown = (
                     not student_info.get('student_id') or
@@ -184,7 +199,7 @@ class AssignmentWorkflow:
                     self.pending_retry.append({
                         'uid': email_uid,
                         'subject': email_data['subject'],
-                        'from': email_data['from'],
+                        'from': email_data['sender_email'],
                         'attachments': email_data['attachments'],
                         'previous_result': student_info,
                         'email_data': email_data
@@ -627,6 +642,21 @@ class AssignmentWorkflow:
             # Process each result
             for i, (email_info, new_result) in enumerate(zip(self.pending_retry, retry_results)):
                 email_uid = email_info['uid']
+
+                # If name is missing but student_id exists, look up from database
+                if new_result.get('student_id') and not new_result.get('name'):
+                    try:
+                        import sqlite3
+                        conn = sqlite3.connect('assignment_submissions.db')
+                        cur = conn.cursor()
+                        cur.execute("SELECT name FROM students WHERE student_id = ?", (new_result['student_id'],))
+                        row = cur.fetchone()
+                        conn.close()
+                        if row:
+                            new_result['name'] = row[0]
+                            print(f"  Resolved name from DB: {row[0]} (student_id={new_result['student_id']})")
+                    except Exception as e:
+                        print(f"  Warning: Failed to lookup student name: {e}")
 
                 # Check if extraction improved
                 if (new_result.get('student_id') and

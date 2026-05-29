@@ -17,11 +17,18 @@ class AIExtractor:
         self.model = settings.LLM_MODEL
 
         # 作业名称规范化映射
+        # 注意：中文数字匹配必须放在阿拉伯数字之前，避免"作业四"匹配到数字4
         self.assignment_patterns = {
-            r'[一11][\s]*(?:次|个)?[\s]*(?:作业|实验|assignment|homework|work)': '作业1',
-            r'[二2two][\s]*(?:次|个)?[\s]*(?:作业|实验|assignment|homework|work)': '作业2',
-            r'[三3three][\s]*(?:次|个)?[\s]*(?:作业|实验|assignment|homework|work)': '作业3',
+            r'(?:作业|实验)[\s]*五': '作业5',
+            r'(?:作业|实验)[\s]*四': '作业4',
+            r'(?:作业|实验)[\s]*三': '作业3',
+            r'(?:作业|实验)[\s]*二': '作业2',
+            r'(?:作业|实验)[\s]*一': '作业1',
+            r'[五5five][\s]*(?:次|个)?[\s]*(?:作业|实验|assignment|homework|work)': '作业5',
             r'[四4four][\s]*(?:次|个)?[\s]*(?:作业|实验|assignment|homework|work)': '作业4',
+            r'[三3three][\s]*(?:次|个)?[\s]*(?:作业|实验|assignment|homework|work)': '作业3',
+            r'[二2two][\s]*(?:次|个)?[\s]*(?:作业|实验|assignment|homework|work)': '作业2',
+            r'[一11][\s]*(?:次|个)?[\s]*(?:作业|实验|assignment|homework|work)': '作业1',
         }
 
     async def extract_student_info(

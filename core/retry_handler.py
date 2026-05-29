@@ -7,7 +7,7 @@ from core.workflow import workflow
 from core.async_status_manager import get_async_status_manager
 from database.async_operations import async_db
 from config.settings import settings
-from database.models import ProcessingStatus, AIExtractionStatus, DownloadStatus
+from database.models import ProcessingStatus, AIExtractionStatus, DownloadStatus, AsyncSessionLocal
 
 class RetryHandler:
     """Handles retry and re-analysis operations for failed submissions"""
@@ -30,10 +30,10 @@ class RetryHandler:
         self.status_mgr = None  # 延迟初始化
 
     def _get_status_manager(self):
-        """获取或创建状态管理器实例"""
-        if self.status_mgr is None:
-            self.status_mgr = get_async_status_manager(self.async_db)
-        return self.status_mgr
+        """获取状态管理器实例 - 每次创建新会话以避免锁问题"""
+        # Create a new AsyncSession for each call to avoid SQLite lock issues
+        session = AsyncSessionLocal()
+        return get_async_status_manager(session)
 
     async def smart_retry_page(
         self,
@@ -238,6 +238,10 @@ class RetryHandler:
                 submission_id = submission.get('id')
                 student_id = submission.get('student_id', 'Unknown')
 
+                # 如果没有数据库记录，先创建一个新的记录
+                if not submission_id:
+                    print(f"[RetryHandler] No database record found for {email_uid}, creating new record...")
+
                 if progress_callback:
                     progress_callback(idx + 1, total, f"正在重新分析: {student_id}")
 
@@ -265,6 +269,41 @@ class RetryHandler:
                     new_student_id = student_info.get('student_id') or submission.get('student_id')
                     new_name = student_info.get('name') or submission.get('name')
                     new_assignment = student_info.get('assignment_name') or submission.get('assignment_name')
+
+                    # 如果没有数据库记录，先创建一个新的记录
+                    if not submission_id:
+                        print(f"[RetryHandler] No database record found, creating new record for {email_uid}")
+
+                        # 创建新的提交记录
+                        import json
+                        from datetime import datetime
+                        body_json = json.dumps(email_data.get('email_body'), ensure_ascii=False) if email_data.get('email_body') else None
+
+                        new_submission = await self.async_db.create_submission(
+                            email_uid=email_uid,
+                            email_subject=email_data.get('subject'),
+                            sender_email=email_data.get('sender_email'),
+                            sender_name=new_name,
+                            submission_time=datetime.now(),
+                            message_id=email_data.get('message_id'),
+                            student_id=new_student_id,
+                            assignment_name=new_assignment,
+                            status='unreplied',
+                            body=body_json
+                        )
+
+                        if not new_submission:
+                            results['failed'] += 1
+                            results['details'].append({
+                                'email_uid': email_uid,
+                                'student_id': new_student_id,
+                                'status': 'failed',
+                                'reason': 'Failed to create database record'
+                            })
+                            continue
+
+                        submission_id = new_submission.id
+                        print(f"[RetryHandler] Created new database record with ID {submission_id}")
 
                     # Determine new status based on extraction quality
                     if student_info.get('student_id') and student_info.get('name') and student_info.get('assignment_name'):
@@ -325,9 +364,51 @@ class RetryHandler:
 
                             new_status = 'unreplied'
                             status_mgr = self._get_status_manager()
+                            try:
+                                await status_mgr.transition(
+                                    submission_id, 'ai_extraction', AIExtractionStatus.SUCCESS,
+                                    reason='重新AI提取成功'
+                                )
+
+                                success = self.db.update_submission_full(
+                                    submission_id=submission_id,
+                                    student_id=new_student_id,
+                                    name=new_name,
+                                    assignment_name=new_assignment,
+                                    status=new_status,
+                                    email=submission.get('email'),
+                                    email_uid=email_uid,
+                                    email_subject=email_data.get('subject'),
+                                    sender_email=email_data.get('sender_email'),
+                                    submission_time=submission.get('submission_time')
+                                )
+
+                                if success:
+                                    results['success'] += 1
+                                    results['details'].append({
+                                        'email_uid': email_uid,
+                                        'student_id': new_student_id,
+                                        'status': 'success',
+                                        'action': 'updated'
+                                    })
+                                else:
+                                    results['failed'] += 1
+                                    results['details'].append({
+                                        'email_uid': email_uid,
+                                        'student_id': new_student_id,
+                                        'status': 'failed',
+                                        'reason': 'Database update failed'
+                                    })
+                            finally:
+                                await status_mgr.close()
+                    else:
+                        # Still has issues after re-analysis
+                        new_status = 'ai_error'
+                        status_mgr = self._get_status_manager()
+                        try:
                             await status_mgr.transition(
-                                submission_id, 'ai_extraction', AIExtractionStatus.SUCCESS,
-                                reason='重新AI提取成功'
+                                submission_id, 'ai_extraction', AIExtractionStatus.FAILED,
+                                reason='重新AI提取仍然失败'
                             )
 
                             success = self.db.update_submission_full(
@@ -344,12 +425,13 @@ class RetryHandler:
                             )
 
                             if success:
-                                results['success'] += 1
+                                results['failed'] += 1  # Still failed, so count as failed
                                 results['details'].append({
                                     'email_uid': email_uid,
                                     'student_id': new_student_id,
-                                    'status': 'success',
-                                    'action': 'updated'
+                                    'status': 'failed',
+                                    'reason': 'AI extraction still incomplete',
+                                    'action': 'updated_with_errors'
                                 })
                             else:
                                 results['failed'] += 1
@@ -359,45 +441,8 @@ class RetryHandler:
                                     'status': 'failed',
                                     'reason': 'Database update failed'
                                 })
-                    else:
-                        # Still has issues after re-analysis
-                        new_status = 'ai_error'
-                        status_mgr = self._get_status_manager()
-                        await status_mgr.transition(
-                            submission_id, 'ai_extraction', AIExtractionStatus.FAILED,
-                            reason='重新AI提取仍然失败'
-                        )
-
-                        success = self.db.update_submission_full(
-                            submission_id=submission_id,
-                            student_id=new_student_id,
-                            name=new_name,
-                            assignment_name=new_assignment,
-                            status=new_status,
-                            email=submission.get('email'),
-                            email_uid=email_uid,
-                            email_subject=email_data.get('subject'),
-                            sender_email=email_data.get('sender_email'),
-                            submission_time=submission.get('submission_time')
-                        )
-
-                        if success:
-                            results['failed'] += 1  # Still failed, so count as failed
-                            results['details'].append({
-                                'email_uid': email_uid,
-                                'student_id': new_student_id,
-                                'status': 'failed',
-                                'reason': 'AI extraction still incomplete',
-                                'action': 'updated_with_errors'
-                            })
-                        else:
-                            results['failed'] += 1
-                            results['details'].append({
-                                'email_uid': email_uid,
-                                'student_id': new_student_id,
-                                'status': 'failed',
-                                'reason': 'Database update failed'
-                            })
+                        finally:
+                            await status_mgr.close()
 
                 except Exception as e:
                     results['failed'] += 1
@@ -494,6 +539,10 @@ class RetryHandler:
         Returns:
             是否成功
         """
+        if not submission_id:
+            print(f"[RetryHandler] Cannot merge submission with ID None")
+            return False
+
         try:
             import json
             from datetime import datetime
@@ -525,20 +574,23 @@ class RetryHandler:
 
             # 使用状态管理器更新状态
             status_mgr = self._get_status_manager()
-            await status_mgr.transition(
-                submission_id, 'ai_extraction', AIExtractionStatus.SUCCESS,
-                reason='重新AI提取成功并合并为新版本'
-            )
-            await status_mgr.transition(
-                submission_id, 'processing', ProcessingStatus.DOWNLOADED,
-                reason='已合并为新版本'
-            )
+            try:
+                await status_mgr.transition(
+                    submission_id, 'ai_extraction', AIExtractionStatus.SUCCESS,
+                    reason='重新AI提取成功并合并为新版本'
+                )
+                await status_mgr.transition(
+                    submission_id, 'processing', ProcessingStatus.DOWNLOADED,
+                    reason='已合并为新版本'
+                )
 
-            # 标记原记录为非最新版本
-            await self.async_db.mark_submission_not_latest(original_submission_id)
+                # 标记原记录为非最新版本
+                await self.async_db.mark_submission_not_latest(original_submission_id)
 
-            print(f"[RetryHandler] Successfully merged submission {submission_id} as version {new_version} of {original_submission_id}")
-            return True
+                print(f"[RetryHandler] Successfully merged submission {submission_id} as version {new_version} of {original_submission_id}")
+                return True
+            finally:
+                await status_mgr.close()
 
         except Exception as e:
             print(f"[RetryHandler] Error merging as new version: {e}")

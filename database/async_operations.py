@@ -365,7 +365,9 @@ class AsyncDatabaseOperations:
         is_latest: Optional[bool] = None,
         is_primary: Optional[bool] = None,
         parent_id: Optional[int] = None,
-        relation_type: Optional[str] = None
+        relation_type: Optional[str] = None,
+        group_id: Optional[int] = None,
+        group_order: Optional[int] = None
     ) -> bool:
         """
         更新提交记录 - 用于版本合并
@@ -386,6 +388,8 @@ class AsyncDatabaseOperations:
             is_primary: 是否为主记录
             parent_id: 父记录ID
             relation_type: 关联类型
+            group_id: 提交组ID
+            group_order: 组内顺序
 
         Returns:
             是否成功
@@ -445,6 +449,10 @@ class AsyncDatabaseOperations:
                     submission.parent_id = parent_id
                 if relation_type is not None:
                     submission.relation_type = relation_type
+                if group_id is not None:
+                    submission.group_id = group_id
+                if group_order is not None:
+                    submission.group_order = group_order
 
                 submission.updated_at = datetime.now()
 
