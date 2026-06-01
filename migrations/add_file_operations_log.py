@@ -9,6 +9,15 @@ from pathlib import Path
 from config.settings import settings
 
 
+def migrate(database_path: str = None) -> bool:
+    """执行迁移"""
+    try:
+        upgrade()
+        return True
+    except Exception:
+        return False
+
+
 def upgrade():
     """执行Schema升级"""
     conn = sqlite3.connect(str(settings.DATABASE_PATH))

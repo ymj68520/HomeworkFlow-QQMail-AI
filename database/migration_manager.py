@@ -24,12 +24,13 @@ class MigrationManager:
         Args:
             migrations_dir: 迁移脚本目录路径，默认为项目根目录下的migrations
         """
+        project_root = Path(__file__).parent.parent
+
         if migrations_dir is None:
-            # 获取项目根目录
-            project_root = Path(__file__).parent.parent
             migrations_dir = project_root / "migrations"
 
         self.migrations_dir = Path(migrations_dir)
+        self.extra_migrations_dir = project_root / "database" / "migrations"
         self.db_path = settings.DATABASE_PATH
 
         # 确保迁移目录存在
@@ -80,22 +81,31 @@ class MigrationManager:
 
     def _discover_migrations(self) -> List[Tuple[str, Path]]:
         """
-        发现所有迁移脚本
+        发现所有迁移脚本（扫描 migrations/ 和 database/migrations/ 两个目录）
 
         Returns:
             按文件名排序的迁移列表 [(migration_name, migration_path), ...]
         """
         migrations = []
 
-        # 查找所有Python文件
+        # 扫描主迁移目录
         for py_file in sorted(self.migrations_dir.glob("*.py")):
-            # 跳过 __init__.py
             if py_file.name == "__init__.py":
                 continue
+            migrations.append((py_file.stem, py_file))
 
-            migration_name = py_file.stem
-            migrations.append((migration_name, py_file))
+        # 扫描 database/migrations/ 目录
+        if self.extra_migrations_dir.exists():
+            for py_file in sorted(self.extra_migrations_dir.glob("*.py")):
+                if py_file.name == "__init__.py":
+                    continue
+                # 避免同名冲突
+                name = py_file.stem
+                if not any(n == name for n, _ in migrations):
+                    migrations.append((name, py_file))
 
+        # 按文件名排序确保执行顺序
+        migrations.sort(key=lambda x: x[0])
         return migrations
 
     def _load_migration_module(self, migration_path: Path):
@@ -114,8 +124,9 @@ class MigrationManager:
         return module
 
     def _has_migrate_function(self, module) -> bool:
-        """检查模块是否有migrate函数"""
-        return hasattr(module, 'migrate') and callable(module.migrate)
+        """检查模块是否有migrate或upgrade函数"""
+        return (hasattr(module, 'migrate') and callable(module.migrate)) or \
+               (hasattr(module, 'upgrade') and callable(module.upgrade))
 
     def migrate(self, dry_run: bool = False) -> Tuple[bool, List[str]]:
         """
@@ -173,18 +184,25 @@ class MigrationManager:
                         messages.append(f"[WARN] Migration {migration_name} has no migrate() function, skipping")
                         continue
 
-                    # 执行迁移
-                    # 有些迁移需要database_path参数，有些不带参数
+                    # 执行迁移（支持 migrate() 和 upgrade() 两种函数签名）
                     import inspect
-                    sig = inspect.signature(module.migrate)
+                    import asyncio
+
+                    if hasattr(module, 'migrate') and callable(module.migrate):
+                        migrate_fn = module.migrate
+                    else:
+                        migrate_fn = module.upgrade
+
+                    # 有些迁移需要database_path参数，有些不带参数
+                    sig = inspect.signature(migrate_fn)
                     params = list(sig.parameters.keys())
 
                     if len(params) > 0 and params[0] == 'database_path':
-                        # 需要database_path参数的迁移
-                        result = module.migrate(str(self.db_path))
+                        result = migrate_fn(str(self.db_path))
+                    elif asyncio.iscoroutinefunction(migrate_fn):
+                        result = asyncio.run(migrate_fn())
                     else:
-                        # 不带参数的迁移
-                        result = module.migrate()
+                        result = migrate_fn()
 
                     # 检查结果
                     if result is False:

@@ -1008,6 +1008,11 @@ class DatabaseOperations:
                 'status': s.status,
                 'error_message': s.error_message,
                 'body': s.body,
+                # 新增：独立状态字段（供智能重试分类使用）
+                'processing_status': getattr(s, 'processing_status', None),
+                'ai_status': getattr(s, 'ai_status', None),
+                'download_status': getattr(s, 'download_status', None),
+                'reply_status': getattr(s, 'reply_status', None),
                 # Include relationship fields for grouping
                 'parent_id': s.parent_id,
                 'relation_type': s.relation_type if s.relation_type else None,

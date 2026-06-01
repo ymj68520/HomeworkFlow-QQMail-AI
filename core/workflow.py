@@ -119,7 +119,8 @@ class AssignmentWorkflow:
 
             if not validation_result.is_valid:
                 print(f"Attachment validation failed: {validation_result.reason}")
-                # Keep email unread, log rejection, don't process further
+                # Mark as read to avoid reprocessing loop
+                self.parser.mark_as_read(email_uid)
                 self.db.log_email_action(
                     email_uid=email_uid,
                     action='attachment_rejected',
@@ -149,11 +150,22 @@ class AssignmentWorkflow:
             if multi_result['is_multi_assignment'] and multi_result['is_complete']:
                 # 多作业流程 (NEW)
                 print("Processing as multi-assignment submission")
-                return await multi_assignment_processor.process_multi_assignment(
+                result = await multi_assignment_processor.process_multi_assignment(
                     email_uid=email_uid,
                     email_data=email_data,
                     detection_result=multi_result
                 )
+                # 处理完成或已处理过，标记已读并移动邮件
+                action = result.get('action')
+                if result.get('success') or action in ('already_processed', 'manual_review'):
+                    self.parser.move_to_folder(email_uid, self.settings.TARGET_FOLDER)
+                    self.db.log_email_action(
+                        email_uid=email_uid,
+                        action='processed',
+                        folder=self.settings.TARGET_FOLDER,
+                        details=f"Multi-assignment: group_id={result.get('group_id')}, action={action}"
+                    )
+                return result
             else:
                 # 单作业流程 (现有) - 保持所有现有逻辑不变
                 if multi_result.get('is_multi_assignment') and not multi_result.get('is_complete'):
@@ -256,7 +268,8 @@ class AssignmentWorkflow:
         email_uid: str,
         email_data: Dict,
         student_info: Dict,
-        is_retry: bool = False
+        is_retry: bool = False,
+        existing_submission_id: Optional[int] = None
     ) -> dict:
         """
         Process email with already-extracted student info
@@ -267,6 +280,7 @@ class AssignmentWorkflow:
             email_data: Parsed email data
             student_info: Extracted student information
             is_retry: Whether this is a retry from batch processing
+            existing_submission_id: If provided, skip dedup and use this existing record
 
         Returns:
             Processing result dictionary
@@ -283,34 +297,36 @@ class AssignmentWorkflow:
         student_name = student_info.get('name')
         assignment_name = student_info.get('assignment_name')
 
-        # 1. 首先检查邮件是否重复
-        email_result = await self.dedup_service.check_email(email_uid)
-        if email_result.is_duplicate and not is_retry:
-            print(f"Email already processed: {email_uid}")
-            return {'success': True, 'action': 'skip', 'reason': 'email_duplicate'}
+        # 1. 首先检查邮件是否重复（已有提交记录时跳过）
+        if not existing_submission_id:
+            email_result = await self.dedup_service.check_email(email_uid)
+            if email_result.is_duplicate and not is_retry:
+                print(f"Email already processed: {email_uid}")
+                return {'success': True, 'action': 'skip', 'reason': 'email_duplicate'}
 
-        # 2. 使用新服务进行提交去重检查（含模糊匹配）
-        dedup_result = await self.dedup_service.check_submission_with_fuzzy(
-            student_id=student_id,
-            name=student_name,
-            assignment_name=assignment_name
-        )
+        # 2. 使用新服务进行提交去重检查（含模糊匹配，已有提交记录时跳过）
+        if not existing_submission_id:
+            dedup_result = await self.dedup_service.check_submission_with_fuzzy(
+                student_id=student_id,
+                name=student_name,
+                assignment_name=assignment_name
+            )
 
-        if dedup_result.is_duplicate:
-            if dedup_result.duplicate_type == 'submission':
-                print(f"Duplicate submission: {student_id} - {assignment_name}")
-                # 使用事务性文件操作创建新版本
-                return await self._handle_duplicate_version(
-                    email_uid, email_data, student_info, dedup_result.version
-                )
-            elif dedup_result.duplicate_type == 'fuzzy_match':
-                print(f"Possible duplicate detected: {dedup_result.message}")
-                # 对于模糊匹配，暂时当作新提交处理（可以后续添加人工审核逻辑）
-                # 理由：模糊匹配表示学号或姓名相似但不完全匹配，可能是：
-                # 1. 不同学生提交（需要人工确认）
-                # 2. 输入错误（需要学生确认）
-                # 为保证系统可用性，暂按新提交处理，后续可添加审核队列
-                print("Proceeding as new submission (fuzzy match)")
+            if dedup_result.is_duplicate:
+                if dedup_result.duplicate_type == 'submission':
+                    print(f"Duplicate submission: {student_id} - {assignment_name}")
+                    # 使用事务性文件操作创建新版本
+                    return await self._handle_duplicate_version(
+                        email_uid, email_data, student_info, dedup_result.version
+                    )
+                elif dedup_result.duplicate_type == 'fuzzy_match':
+                    print(f"Possible duplicate detected: {dedup_result.message}")
+                    # 对于模糊匹配，暂时当作新提交处理（可以后续添加人工审核逻辑）
+                    # 理由：模糊匹配表示学号或姓名相似但不完全匹配，可能是：
+                    # 1. 不同学生提交（需要人工确认）
+                    # 2. 输入错误（需要学生确认）
+                    # 为保证系统可用性，暂按新提交处理，后续可添加审核队列
+                    print("Proceeding as new submission (fuzzy match)")
 
         # 2. 保存附件到本地
         print("Storing attachments locally...")
@@ -324,25 +340,35 @@ class AssignmentWorkflow:
         print(f"Files stored at: {local_path}")
 
         # 3. 存储到数据库
-        print("Saving to database...")
-        import json
-        body_json = json.dumps(email_data.get('email_body'), ensure_ascii=False) if email_data.get('email_body') else None
-        submission = self.db.create_submission(
-            student_id=student_id,
-            assignment_name=assignment_name,
-            email_uid=email_uid,
-            message_id=email_data.get('message_id'),
-            email_subject=email_data['subject'],
-            sender_email=email_data['sender_email'],
-            sender_name=student_name,
-            submission_time=datetime.now(),
-            local_path=local_path,
-            status=SubmissionStatus.UNREPLIED.value,  # 默认值，会被状态管理器覆盖
-            body=body_json
-        )
+        if existing_submission_id:
+            # 重试模式：使用已有提交记录
+            print(f"Reusing existing submission record: {existing_submission_id}")
+            submission = self.db.get_submission_by_id(existing_submission_id)
+            if not submission:
+                return {'success': False, 'error': 'Existing submission not found', 'action': 'db_failed'}
+            # 更新本地路径
+            if local_path:
+                self.db.update_submission_local_path(submission.id, local_path)
+        else:
+            print("Saving to database...")
+            import json
+            body_json = json.dumps(email_data.get('email_body'), ensure_ascii=False) if email_data.get('email_body') else None
+            submission = self.db.create_submission(
+                student_id=student_id,
+                assignment_name=assignment_name,
+                email_uid=email_uid,
+                message_id=email_data.get('message_id'),
+                email_subject=email_data['subject'],
+                sender_email=email_data['sender_email'],
+                sender_name=student_name,
+                submission_time=datetime.now(),
+                local_path=local_path,
+                status=SubmissionStatus.UNREPLIED.value,  # 默认值，会被状态管理器覆盖
+                body=body_json
+            )
 
-        if not submission:
-            return {'success': False, 'error': 'Failed to save to database', 'action': 'db_failed'}
+            if not submission:
+                return {'success': False, 'error': 'Failed to save to database', 'action': 'db_failed'}
 
         # 新增：使用状态管理器更新状态
         status_mgr = self._get_status_manager()
@@ -765,6 +791,8 @@ class AssignmentWorkflow:
                     elif result['action'] == 'marked_read':
                         results['marked_read'] += 1
                     elif result['action'] == 'updated_duplicate':
+                        results['processed'] += 1
+                    elif result['action'] == 'already_processed':
                         results['processed'] += 1
                 else:
                     results['errors'] += 1

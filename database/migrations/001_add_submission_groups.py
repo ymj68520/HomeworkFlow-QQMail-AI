@@ -54,17 +54,27 @@ def upgrade():
             ON submission_groups(message_id)
         """)
 
-        # Add group_id column to submissions table
-        cursor.execute("""
-            ALTER TABLE submissions
-            ADD COLUMN group_id INTEGER REFERENCES submission_groups(id)
-        """)
+        # 检查现有字段，避免重复添加
+        cursor.execute("PRAGMA table_info(submissions)")
+        existing_columns = [col[1] for col in cursor.fetchall()]
 
-        # Add group_order column to submissions table
-        cursor.execute("""
-            ALTER TABLE submissions
-            ADD COLUMN group_order INTEGER DEFAULT 0 NOT NULL
-        """)
+        if 'group_id' not in existing_columns:
+            cursor.execute("""
+                ALTER TABLE submissions
+                ADD COLUMN group_id INTEGER REFERENCES submission_groups(id)
+            """)
+            print("[OK] Added column 'group_id'")
+        else:
+            print("[INFO] Column 'group_id' already exists, skipping")
+
+        if 'group_order' not in existing_columns:
+            cursor.execute("""
+                ALTER TABLE submissions
+                ADD COLUMN group_order INTEGER DEFAULT 0 NOT NULL
+            """)
+            print("[OK] Added column 'group_order'")
+        else:
+            print("[INFO] Column 'group_order' already exists, skipping")
 
         # Create index for group_id
         cursor.execute("""

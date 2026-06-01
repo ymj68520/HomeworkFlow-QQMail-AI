@@ -135,8 +135,11 @@ class RetryHandler:
                     })
                     continue
 
-                # Re-run full workflow
+                # 根据异常类型选择不同的重试路径
+                is_ai_fail = self._is_ai_failure(submission)
+
                 try:
+                    # 两种路径都需要重新获取邮件数据（附件需要重新下载）
                     email_data = self.parser.parse_email(str(email_uid))
                     if not email_data:
                         results['failed'] += 1
@@ -148,16 +151,37 @@ class RetryHandler:
                         })
                         continue
 
-                    # student_info lookup...
-                    student_info = await self._extract_info(email_data)
+                    if is_ai_fail:
+                        # PATH A: AI识别异常 → 从头重新处理（重新AI提取 + 完整后续流程）
+                        print(f"[RetryHandler] AI failure for {student_id}, re-running full pipeline")
+                        student_info = await self._extract_info(email_data)
+                        result = await self.workflow._process_extracted_info(
+                            email_uid=str(email_uid),
+                            email_data=email_data,
+                            student_info=student_info,
+                            is_retry=True
+                        )
+                    else:
+                        # PATH B: 其他异常（下载失败、回复失败等）→ 跳过AI提取，使用已有学生信息
+                        print(f"[RetryHandler] Non-AI failure for {student_id}, skipping AI extraction")
+                        existing_student_info = await self._get_existing_student_info(submission_id)
+                        if not existing_student_info or not existing_student_info.get('student_id'):
+                            results['failed'] += 1
+                            results['details'].append({
+                                'email_uid': email_uid,
+                                'student_id': student_id,
+                                'status': 'failed',
+                                'reason': '无法从数据库加载学生信息'
+                            })
+                            continue
 
-                    # Re-process with workflow, passing existing submission info
-                    result = await self.workflow._process_extracted_info(
-                        email_uid=str(email_uid),
-                        email_data=email_data,
-                        student_info=student_info,
-                        is_retry=True
-                    )
+                        result = await self.workflow._process_extracted_info(
+                            email_uid=str(email_uid),
+                            email_data=email_data,
+                            student_info=existing_student_info,
+                            is_retry=True,
+                            existing_submission_id=submission_id
+                        )
 
                     if result.get('success'):
                         results['success'] += 1
@@ -457,6 +481,31 @@ class RetryHandler:
             self.parser.disconnect()
 
         return results
+
+    def _is_ai_failure(self, submission: Dict) -> bool:
+        """判断是否为AI识别异常（需要从头重新处理）"""
+        # 新状态系统: ai_status == 'failed'
+        if submission.get('ai_status') == AIExtractionStatus.FAILED.value:
+            return True
+        # 旧状态系统: status == 'ai_error'
+        if submission.get('status') == 'ai_error':
+            return True
+        # pending 表示从未完成过处理，也需要AI重新提取
+        if submission.get('status') == 'pending':
+            return True
+        return False
+
+    async def _get_existing_student_info(self, submission_id: int) -> Optional[Dict]:
+        """从数据库加载已有的学生信息（用于跳过AI提取的重试路径）"""
+        submission = self.db.get_submission_by_id(submission_id)
+        if not submission:
+            return None
+        return {
+            'student_id': submission.student.student_id if submission.student else None,
+            'name': submission.student.name if submission.student else None,
+            'assignment_name': submission.assignment.name if submission.assignment else None,
+            'is_assignment': True,
+        }
 
     async def _email_exists(self, email_uid: str) -> bool:
         """Check if email still exists on server"""

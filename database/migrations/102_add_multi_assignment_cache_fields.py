@@ -18,18 +18,32 @@ from database.models import async_engine
 
 async def upgrade():
     """Add cache_data and cache_type columns to ai_extraction_cache table"""
-    async with async_engine.begin() as conn:
-        # Add cache_data column for JSON storage
-        await conn.execute(text(
-            "ALTER TABLE ai_extraction_cache ADD COLUMN cache_data TEXT"
-        ))
+    import sqlite3
+    from config.settings import settings
 
-        # Add cache_type column to distinguish single vs multi-assignment cache
-        await conn.execute(text(
-            "ALTER TABLE ai_extraction_cache ADD COLUMN cache_type VARCHAR(20) DEFAULT 'single'"
-        ))
+    conn = sqlite3.connect(str(settings.DATABASE_PATH))
+    cursor = conn.cursor()
 
+    try:
+        cursor.execute("PRAGMA table_info(ai_extraction_cache)")
+        existing_columns = [col[1] for col in cursor.fetchall()]
+
+        if 'cache_data' not in existing_columns:
+            cursor.execute("ALTER TABLE ai_extraction_cache ADD COLUMN cache_data TEXT")
+            print("[OK] Added column 'cache_data'")
+        else:
+            print("[INFO] Column 'cache_data' already exists, skipping")
+
+        if 'cache_type' not in existing_columns:
+            cursor.execute("ALTER TABLE ai_extraction_cache ADD COLUMN cache_type VARCHAR(20) DEFAULT 'single'")
+            print("[OK] Added column 'cache_type'")
+        else:
+            print("[INFO] Column 'cache_type' already exists, skipping")
+
+        conn.commit()
         print("Migration 002: Added multi-assignment cache fields successfully")
+    finally:
+        conn.close()
 
 
 async def downgrade():
